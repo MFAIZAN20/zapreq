@@ -72,23 +72,11 @@ jobs:
           }
           EOF_PKG
 
-      - name: Generate .SRCINFO
-        run: |
-          docker run --rm -v "$PWD:/work" -w /work archlinux:latest bash -lc '
-            set -euo pipefail
-            pacman -Sy --noconfirm --needed base-devel
-            useradd -m builder
-            cp PKGBUILD /home/builder/PKGBUILD
-            chown builder:builder /home/builder/PKGBUILD
-            su builder -c "cd /home/builder && makepkg --printsrcinfo" > /work/.SRCINFO
-          '
-
       - name: Push to AUR
-        uses: KSXGitHub/github-actions-deploy-aur@v2.7.2
+        uses: KSXGitHub/github-actions-deploy-aur@v4.1.3
         with:
           pkgname: ferrite
           pkgbuild: ./PKGBUILD
-          srcinfo: ./.SRCINFO
           commit_username: "Muhammad Faizan"
           commit_email: "mfkhalil683@gmail.com"
           ssh_private_key: ${{ secrets.AUR_SSH_KEY }}
