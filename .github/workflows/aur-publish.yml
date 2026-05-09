@@ -1,0 +1,96 @@
+name: AUR Publish
+
+on:
+  push:
+    tags: ['v*.*.*']
+
+jobs:
+  aur:
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref_name, 'v')
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Get version from tag
+        id: version
+        env:
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          VERSION="${TAG_NAME#v}"
+          if [ -z "$VERSION" ] || [ "$VERSION" = "$TAG_NAME" ]; then
+            echo "Invalid release tag: $TAG_NAME (expected v<semver>)" >&2
+            exit 1
+          fi
+          echo "VERSION=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Compute source tarball SHA256
+        id: sha
+        env:
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          URL="https://github.com/MFAIZAN20/ferrite/archive/refs/tags/${TAG_NAME}.tar.gz"
+          SHA="$(curl -sL "$URL" | sha256sum | cut -d ' ' -f1)"
+          if [ -z "$SHA" ]; then
+            echo "Failed to compute SHA256 from $URL" >&2
+            exit 1
+          fi
+          echo "SHA256=$SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Write PKGBUILD
+        run: |
+          cat > PKGBUILD << EOF_PKG
+          # Maintainer: Muhammad Faizan <mfkhalil683@gmail.com>
+          pkgname=ferrite
+          pkgver=${{ steps.version.outputs.VERSION }}
+          pkgrel=1
+          pkgdesc="A fast, friendly HTTP client for the terminal"
+          arch=('x86_64' 'aarch64')
+          url="https://github.com/MFAIZAN20/ferrite"
+          license=('MIT' 'Apache-2.0')
+          depends=('gcc-libs')
+          makedepends=('rust' 'cargo')
+          source=("\$pkgname-\$pkgver.tar.gz::https://github.com/MFAIZAN20/ferrite/archive/refs/tags/v\$pkgver.tar.gz")
+          sha256sums=('${{ steps.sha.outputs.SHA256 }}')
+
+          build() {
+              cd "\$pkgname-\$pkgver"
+              cargo build --release --locked
+          }
+
+          package() {
+              cd "\$pkgname-\$pkgver"
+              install -Dm755 "target/release/http" \\
+                  "\$pkgdir/usr/bin/http-ferrite"
+              install -Dm644 LICENSE-MIT \\
+                  "\$pkgdir/usr/share/licenses/\$pkgname/LICENSE-MIT"
+              install -Dm644 LICENSE-APACHE \\
+                  "\$pkgdir/usr/share/licenses/\$pkgname/LICENSE-APACHE"
+              install -Dm644 README.md \\
+                  "\$pkgdir/usr/share/doc/\$pkgname/README.md"
+          }
+          EOF_PKG
+
+      - name: Generate .SRCINFO
+        run: |
+          docker run --rm -v "$PWD:/work" -w /work archlinux:latest bash -lc '
+            set -euo pipefail
+            pacman -Sy --noconfirm --needed base-devel
+            useradd -m builder
+            cp PKGBUILD /home/builder/PKGBUILD
+            chown builder:builder /home/builder/PKGBUILD
+            su builder -c "cd /home/builder && makepkg --printsrcinfo" > /work/.SRCINFO
+          '
+
+      - name: Push to AUR
+        uses: KSXGitHub/github-actions-deploy-aur@v2.7.2
+        with:
+          pkgname: ferrite
+          pkgbuild: ./PKGBUILD
+          srcinfo: ./.SRCINFO
+          commit_username: "Muhammad Faizan"
+          commit_email: "mfkhalil683@gmail.com"
+          ssh_private_key: ${{ secrets.AUR_SSH_KEY }}
+          commit_message: "Update to v${{ steps.version.outputs.VERSION }}"
+          force_push: true
