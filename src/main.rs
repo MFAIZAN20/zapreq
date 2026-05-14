@@ -4,24 +4,24 @@ use regex::Regex;
 use std::collections::HashMap;
 use std::time::Instant;
 
-use ferrite::ai::ai_assist;
-use ferrite::auth::{build_auth, AuthRegistry};
-use ferrite::cli::{parse_cli_from, CliArgs, Command, PluginCommand};
-use ferrite::collections::{
+use zapreq::ai::ai_assist;
+use zapreq::auth::{build_auth, AuthRegistry};
+use zapreq::cli::{parse_cli_from, CliArgs, Command, PluginCommand};
+use zapreq::collections::{
     delete_request, list_requests, load_request, run_request, save_request,
 };
-use ferrite::config::{apply_profile, load_config, load_profile, merge_defaults, CliResolved};
-use ferrite::diff::{diff_requests, print_diff};
-use ferrite::download::download;
-use ferrite::items::parse_request_items;
-use ferrite::output::{build_print_opts, render_exchange_from_cli};
-use ferrite::plugins::manager::{install_plugin, print_plugin_list, uninstall_plugin};
-use ferrite::request::{RequestEngine, RequestSpec};
-use ferrite::response::ResponseData;
-use ferrite::sessions::{
+use zapreq::config::{apply_profile, load_config, load_profile, merge_defaults, CliResolved};
+use zapreq::diff::{diff_requests, print_diff};
+use zapreq::download::download;
+use zapreq::items::parse_request_items;
+use zapreq::output::{build_print_opts, render_exchange_from_cli};
+use zapreq::plugins::manager::{install_plugin, print_plugin_list, uninstall_plugin};
+use zapreq::request::{RequestEngine, RequestSpec};
+use zapreq::response::ResponseData;
+use zapreq::sessions::{
     apply_session_to_request, load_session, save_session, update_session_from_exchange,
 };
-use ferrite::utils::{humanize_bytes, humanize_duration, terminal_width, truncate_str};
+use zapreq::utils::{humanize_bytes, humanize_duration, terminal_width, truncate_str};
 
 /// CAUS-CORERUNTIM-01, CAUS-CORERUNTIM-02, CAUS-CORERUNTIM-03, CAUS-CORERUNTIM-04, CAUS-CORERUNTIM-05, CAUS-INTERNAL-52:
 /// Main orchestration entrypoint with explicit contract wiring, isolated runtime state transitions, and exit-code handling.
@@ -84,10 +84,10 @@ fn run() -> Result<i32> {
                 return Ok(0);
             }
             Command::Ai { prompt } => {
-                let api_key = match std::env::var("FERRITE_AI_KEY") {
+                let api_key = match std::env::var("ZAPREQ_AI_KEY") {
                     Ok(v) if !v.trim().is_empty() => v,
                     _ => {
-                        eprintln!("FERRITE_AI_KEY is not set. Export it first to use `http ai`.");
+                        eprintln!("ZAPREQ_AI_KEY is not set. Export it first to use `http ai`.");
                         return Ok(1);
                     }
                 };
@@ -199,7 +199,7 @@ fn run() -> Result<i32> {
         }
     }
 
-    let usable_url = ferrite::utils::normalize_url(&resolved_url, &args.default_scheme)
+    let usable_url = zapreq::utils::normalize_url(&resolved_url, &args.default_scheme)
         .context("failed to build usable URL")?;
 
     let mut request_items =
@@ -259,7 +259,7 @@ fn run() -> Result<i32> {
         offline_opts.request_body = true;
         offline_opts.response_headers = false;
         offline_opts.response_body = false;
-        ferrite::output::print_request(
+        zapreq::output::print_request(
             &prepared.method,
             &prepared.url,
             &prepared.headers_preview,
@@ -360,7 +360,7 @@ fn main() {
     let code = match run() {
         Ok(code) => code,
         Err(err) => {
-            eprintln!("ferrite error: {err}");
+            eprintln!("zapreq error: {err}");
             2
         }
     };
@@ -499,7 +499,7 @@ fn print_meta_summary(
 
 fn cli_from_saved_request_tokens(
     request: &[String],
-    config: &ferrite::config::Config,
+    config: &zapreq::config::Config,
 ) -> Result<CliArgs> {
     if request.is_empty() {
         return Err(anyhow!(
@@ -536,7 +536,7 @@ fn mask_auth(auth_type: &str, auth: &str) -> String {
 fn cli_from_diff_tokens(
     url: &str,
     request: &[String],
-    config: &ferrite::config::Config,
+    config: &zapreq::config::Config,
 ) -> Result<CliArgs> {
     let mut tokens = request.to_vec();
     if tokens.first().map(|t| t.as_str()) == Some("--") {

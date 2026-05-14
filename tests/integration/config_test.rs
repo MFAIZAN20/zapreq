@@ -3,9 +3,9 @@ use assert_cmd::Command;
 use mockito::Matcher;
 use tempfile::TempDir;
 
-fn ferrite(config_dir: &TempDir) -> Command {
+fn zapreq(config_dir: &TempDir) -> Command {
     let mut cmd = Command::cargo_bin("http").expect("binary should build");
-    cmd.env("FERRITE_CONFIG_DIR", config_dir.path());
+    cmd.env("ZAPREQ_CONFIG_DIR", config_dir.path());
     cmd
 }
 
@@ -29,7 +29,7 @@ fn config_default_options_are_applied() {
         .with_status(200)
         .create();
 
-    ferrite(&cfg)
+    zapreq(&cfg)
         .args(["POST", &format!("{}/cfg-form", server.url()), "a=1"])
         .assert()
         .success();
@@ -56,8 +56,8 @@ fn env_default_options_override_config_defaults() {
         .with_status(200)
         .create();
 
-    ferrite(&cfg)
-        .env("FERRITE_DEFAULT_OPTIONS", "--json")
+    zapreq(&cfg)
+        .env("ZAPREQ_DEFAULT_OPTIONS", "--json")
         .args(["POST", &format!("{}/cfg-json", server.url()), "a=1"])
         .assert()
         .success();

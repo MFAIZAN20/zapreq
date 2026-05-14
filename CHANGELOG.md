@@ -6,10 +6,10 @@
 - Syntax-highlighted output with 4 built-in themes
 - Basic, Bearer, Digest (RFC 7616) authentication
 - Named sessions with cookie + header persistence
-- Environment profiles (~/.config/ferrite/envs/)
+- Environment profiles (~/.config/zapreq/envs/)
 - Request collections (save/run/list/delete)
-- AI-powered request assistant (FERRITE_AI_KEY)
-- Response diffing (ferrite diff URL_A URL_B)
+- AI-powered request assistant (ZAPREQ_AI_KEY)
+- Response diffing (zapreq diff URL_A URL_B)
 - Progress bar download with resume support
 - Plugin system foundation
 - Multi-platform: Linux, macOS, Windows

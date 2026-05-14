@@ -3,9 +3,9 @@ use assert_cmd::Command;
 use mockito::Matcher;
 use tempfile::TempDir;
 
-fn ferrite(config_dir: &TempDir) -> Command {
+fn zapreq(config_dir: &TempDir) -> Command {
     let mut cmd = Command::cargo_bin("http").expect("binary should build");
-    cmd.env("FERRITE_CONFIG_DIR", config_dir.path());
+    cmd.env("ZAPREQ_CONFIG_DIR", config_dir.path());
     cmd
 }
 
@@ -15,11 +15,11 @@ fn get_sends_user_agent() {
     let mut server = common::mock_server();
     let m = server
         .mock("GET", "/ua")
-        .match_header("user-agent", "ferrite/0.1.0")
+        .match_header("user-agent", "zapreq/0.1.0")
         .with_status(200)
         .with_body("ok")
         .create();
-    ferrite(&cfg)
+    zapreq(&cfg)
         .args(["GET", &format!("{}/ua", server.url())])
         .assert()
         .success();
@@ -34,7 +34,7 @@ fn get_with_query_param_in_url() {
         .mock("GET", "/search?q=rust")
         .with_status(200)
         .create();
-    ferrite(&cfg)
+    zapreq(&cfg)
         .args(["GET", &format!("{}/search", server.url()), "q==rust"])
         .assert()
         .success();
@@ -50,7 +50,7 @@ fn get_with_custom_header() {
         .match_header("x-test", "abc")
         .with_status(200)
         .create();
-    ferrite(&cfg)
+    zapreq(&cfg)
         .args(["GET", &format!("{}/hdr", server.url()), "X-Test:abc"])
         .assert()
         .success();
@@ -62,7 +62,7 @@ fn status_200_exits_zero() {
     let cfg = TempDir::new().expect("temp dir");
     let mut server = common::mock_server();
     let _m = common::mock_text(&mut server, "GET", "/ok", 200, "ok");
-    ferrite(&cfg)
+    zapreq(&cfg)
         .args(["GET", &format!("{}/ok", server.url())])
         .assert()
         .success();
@@ -73,7 +73,7 @@ fn status_404_without_check_status_exits_zero() {
     let cfg = TempDir::new().expect("temp dir");
     let mut server = common::mock_server();
     let _m = common::mock_text(&mut server, "GET", "/missing", 404, "not found");
-    ferrite(&cfg)
+    zapreq(&cfg)
         .args(["GET", &format!("{}/missing", server.url())])
         .assert()
         .success();
@@ -84,7 +84,7 @@ fn status_404_with_check_status_exits_one() {
     let cfg = TempDir::new().expect("temp dir");
     let mut server = common::mock_server();
     let _m = common::mock_text(&mut server, "GET", "/missing", 404, "not found");
-    ferrite(&cfg)
+    zapreq(&cfg)
         .args([
             "GET",
             &format!("{}/missing", server.url()),
@@ -105,7 +105,7 @@ fn pretty_none_has_no_ansi() {
         200,
         serde_json::json!({"hello":"world"}),
     );
-    let assert = ferrite(&cfg)
+    let assert = zapreq(&cfg)
         .args(["GET", &format!("{}/json", server.url()), "--pretty", "none"])
         .assert()
         .success();
@@ -118,7 +118,7 @@ fn print_h_only_response_headers() {
     let cfg = TempDir::new().expect("temp dir");
     let mut server = common::mock_server();
     let _m = common::mock_text(&mut server, "GET", "/h", 200, "body-text");
-    let assert = ferrite(&cfg)
+    let assert = zapreq(&cfg)
         .args(["GET", &format!("{}/h", server.url()), "--print", "h"])
         .assert()
         .success();
@@ -132,7 +132,7 @@ fn print_b_only_response_body() {
     let cfg = TempDir::new().expect("temp dir");
     let mut server = common::mock_server();
     let _m = common::mock_text(&mut server, "GET", "/b", 200, "body-text");
-    let assert = ferrite(&cfg)
+    let assert = zapreq(&cfg)
         .args(["GET", &format!("{}/b", server.url()), "--print", "b"])
         .assert()
         .success();
@@ -151,7 +151,7 @@ fn offline_prints_request_without_sending() {
         .with_body("should-not-hit")
         .expect(0)
         .create();
-    let assert = ferrite(&cfg)
+    let assert = zapreq(&cfg)
         .args(["GET", &format!("{}/offline", server.url()), "--offline"])
         .assert()
         .success();

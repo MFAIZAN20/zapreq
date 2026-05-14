@@ -30,7 +30,7 @@ jobs:
         env:
           TAG_NAME: ${{ github.ref_name }}
         run: |
-          URL="https://github.com/MFAIZAN20/ferrite/archive/refs/tags/${TAG_NAME}.tar.gz"
+          URL="https://github.com/MFAIZAN20/zapreq/archive/refs/tags/${TAG_NAME}.tar.gz"
           SHA="$(curl -sL "$URL" | sha256sum | cut -d ' ' -f1)"
           if [ -z "$SHA" ]; then
             echo "Failed to compute SHA256 from $URL" >&2
@@ -42,16 +42,16 @@ jobs:
         run: |
           cat > PKGBUILD << EOF_PKG
           # Maintainer: Muhammad Faizan <mfkhalil683@gmail.com>
-          pkgname=ferrite
+          pkgname=zapreq
           pkgver=${{ steps.version.outputs.VERSION }}
           pkgrel=1
           pkgdesc="A fast, friendly HTTP client for the terminal"
           arch=('x86_64' 'aarch64')
-          url="https://github.com/MFAIZAN20/ferrite"
+          url="https://github.com/MFAIZAN20/zapreq"
           license=('MIT' 'Apache-2.0')
           depends=('gcc-libs')
           makedepends=('rust' 'cargo')
-          source=("\$pkgname-\$pkgver.tar.gz::https://github.com/MFAIZAN20/ferrite/archive/refs/tags/v\$pkgver.tar.gz")
+          source=("\$pkgname-\$pkgver.tar.gz::https://github.com/MFAIZAN20/zapreq/archive/refs/tags/v\$pkgver.tar.gz")
           sha256sums=('${{ steps.sha.outputs.SHA256 }}')
 
           build() {
@@ -62,7 +62,7 @@ jobs:
           package() {
               cd "\$pkgname-\$pkgver"
               install -Dm755 "target/release/http" \\
-                  "\$pkgdir/usr/bin/http-ferrite"
+                  "\$pkgdir/usr/bin/http-zapreq"
               install -Dm644 LICENSE-MIT \\
                   "\$pkgdir/usr/share/licenses/\$pkgname/LICENSE-MIT"
               install -Dm644 LICENSE-APACHE \\
@@ -75,7 +75,7 @@ jobs:
       - name: Push to AUR
         uses: KSXGitHub/github-actions-deploy-aur@v4.1.3
         with:
-          pkgname: ferrite
+          pkgname: zapreq
           pkgbuild: ./PKGBUILD
           commit_username: "Muhammad Faizan"
           commit_email: "mfkhalil683@gmail.com"

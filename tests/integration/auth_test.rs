@@ -4,9 +4,9 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
 use tempfile::TempDir;
 
-fn ferrite(config_dir: &TempDir) -> Command {
+fn zapreq(config_dir: &TempDir) -> Command {
     let mut cmd = Command::cargo_bin("http").expect("binary should build");
-    cmd.env("FERRITE_CONFIG_DIR", config_dir.path());
+    cmd.env("ZAPREQ_CONFIG_DIR", config_dir.path());
     cmd
 }
 
@@ -20,7 +20,7 @@ fn basic_auth_sends_authorization_header() {
         .match_header("authorization", format!("Basic {token}").as_str())
         .with_status(200)
         .create();
-    ferrite(&cfg)
+    zapreq(&cfg)
         .args([
             "GET",
             &format!("{}/basic", server.url()),
@@ -41,7 +41,7 @@ fn bearer_auth_sends_header() {
         .match_header("authorization", "Bearer mytoken")
         .with_status(200)
         .create();
-    ferrite(&cfg)
+    zapreq(&cfg)
         .args([
             "GET",
             &format!("{}/bearer", server.url()),
@@ -60,7 +60,7 @@ fn missing_auth_with_auth_type_warns_user() {
     let cfg = TempDir::new().expect("temp dir");
     let mut server = common::mock_server();
     let _m = common::mock_text(&mut server, "GET", "/warn", 200, "ok");
-    let assert = ferrite(&cfg)
+    let assert = zapreq(&cfg)
         .args([
             "GET",
             &format!("{}/warn", server.url()),
@@ -78,7 +78,7 @@ fn basic_auth_401_propagated_no_retry() {
     let cfg = TempDir::new().expect("temp dir");
     let mut server = common::mock_server();
     let m = common::mock_auth_401(&mut server, "/deny");
-    ferrite(&cfg)
+    zapreq(&cfg)
         .args([
             "GET",
             &format!("{}/deny", server.url()),
@@ -95,7 +95,7 @@ fn auth_masked_in_verbose_output() {
     let cfg = TempDir::new().expect("temp dir");
     let mut server = common::mock_server();
     let _m = common::mock_text(&mut server, "GET", "/verbose", 200, "ok");
-    let assert = ferrite(&cfg)
+    let assert = zapreq(&cfg)
         .args([
             "GET",
             &format!("{}/verbose", server.url()),
@@ -120,7 +120,7 @@ fn session_saves_and_restores_auth() {
         .match_header("authorization", format!("Basic {token}").as_str())
         .with_status(200)
         .create();
-    ferrite(&cfg)
+    zapreq(&cfg)
         .args([
             "GET",
             &format!("{}/login", server.url()),
@@ -138,7 +138,7 @@ fn session_saves_and_restores_auth() {
         .match_header("authorization", format!("Basic {token}").as_str())
         .with_status(200)
         .create();
-    ferrite(&cfg)
+    zapreq(&cfg)
         .args([
             "GET",
             &format!("{}/protected", server.url()),

@@ -2,9 +2,9 @@ use crate::common;
 use assert_cmd::Command;
 use tempfile::TempDir;
 
-fn ferrite(config_dir: &TempDir) -> Command {
+fn zapreq(config_dir: &TempDir) -> Command {
     let mut cmd = Command::cargo_bin("http").expect("binary should build");
-    cmd.env("FERRITE_CONFIG_DIR", config_dir.path());
+    cmd.env("ZAPREQ_CONFIG_DIR", config_dir.path());
     cmd
 }
 
@@ -19,7 +19,7 @@ fn session_persists_cookie_for_followup_requests() {
         .with_header("set-cookie", "sid=abc; Path=/")
         .with_body("ok")
         .create();
-    ferrite(&cfg)
+    zapreq(&cfg)
         .args([
             "GET",
             &format!("{}/seed", server.url()),
@@ -36,7 +36,7 @@ fn session_persists_cookie_for_followup_requests() {
         .with_status(200)
         .with_body("ok")
         .create();
-    ferrite(&cfg)
+    zapreq(&cfg)
         .args([
             "GET",
             &format!("{}/profile", server.url()),
@@ -59,7 +59,7 @@ fn session_read_only_does_not_persist_cookie_changes() {
         .with_header("set-cookie", "sid=one; Path=/")
         .with_body("ok")
         .create();
-    ferrite(&cfg)
+    zapreq(&cfg)
         .args(["GET", &format!("{}/seed", server.url()), "--session", "ro"])
         .assert()
         .success();
@@ -72,7 +72,7 @@ fn session_read_only_does_not_persist_cookie_changes() {
         .with_header("set-cookie", "sid=two; Path=/")
         .with_body("ok")
         .create();
-    ferrite(&cfg)
+    zapreq(&cfg)
         .args([
             "GET",
             &format!("{}/readonly", server.url()),
@@ -90,7 +90,7 @@ fn session_read_only_does_not_persist_cookie_changes() {
         .with_status(200)
         .with_body("ok")
         .create();
-    ferrite(&cfg)
+    zapreq(&cfg)
         .args(["GET", &format!("{}/after", server.url()), "--session", "ro"])
         .assert()
         .success();

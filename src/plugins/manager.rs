@@ -5,10 +5,10 @@ use crate::plugins::{list_plugins, plugins_dir, print_plugins};
 
 /// Prints community plugin installation guidance.
 pub fn install_plugin(name: &str) -> Result<()> {
-    println!("To install a ferrite plugin:");
-    println!("  1. cargo install ferrite-plugin-{name}");
-    println!("  2. Place the .toml manifest in ~/.config/ferrite/plugins/");
-    println!("  See https://github.com/MFAIZAN20/ferrite/wiki/plugins");
+    println!("To install a zapreq plugin:");
+    println!("  1. cargo install zapreq-plugin-{name}");
+    println!("  2. Place the .toml manifest in ~/.config/zapreq/plugins/");
+    println!("  See https://github.com/MFAIZAN20/zapreq/wiki/plugins");
     Ok(())
 }
 

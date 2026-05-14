@@ -2,9 +2,9 @@ use crate::common;
 use assert_cmd::Command;
 use tempfile::TempDir;
 
-fn ferrite(config_dir: &TempDir) -> Command {
+fn zapreq(config_dir: &TempDir) -> Command {
     let mut cmd = Command::cargo_bin("http").expect("binary should build");
-    cmd.env("FERRITE_CONFIG_DIR", config_dir.path());
+    cmd.env("ZAPREQ_CONFIG_DIR", config_dir.path());
     cmd
 }
 
@@ -22,7 +22,7 @@ fn download_writes_response_to_output_path() {
         .with_body("hello-download")
         .create();
 
-    ferrite(&cfg)
+    zapreq(&cfg)
         .args([
             "GET",
             &format!("{}/file", server.url()),
@@ -55,7 +55,7 @@ fn continue_download_sends_range_and_appends_data() {
         .with_body("def")
         .create();
 
-    ferrite(&cfg)
+    zapreq(&cfg)
         .args([
             "GET",
             &format!("{}/resume", server.url()),

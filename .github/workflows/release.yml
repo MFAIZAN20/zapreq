@@ -11,16 +11,16 @@ jobs:
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-            artifact: ferrite-linux-x86_64
+            artifact: zapreq-linux-x86_64
           - os: macos-latest
             target: x86_64-apple-darwin
-            artifact: ferrite-macos-x86_64
+            artifact: zapreq-macos-x86_64
           - os: macos-latest
             target: aarch64-apple-darwin
-            artifact: ferrite-macos-arm64
+            artifact: zapreq-macos-arm64
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-            artifact: ferrite-windows-x86_64.exe
+            artifact: zapreq-windows-x86_64.exe
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4

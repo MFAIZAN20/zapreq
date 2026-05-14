@@ -2,9 +2,9 @@ use crate::common;
 use assert_cmd::Command;
 use tempfile::TempDir;
 
-fn ferrite(config_dir: &TempDir) -> Command {
+fn zapreq(config_dir: &TempDir) -> Command {
     let mut cmd = Command::cargo_bin("http").expect("binary should build");
-    cmd.env("FERRITE_CONFIG_DIR", config_dir.path());
+    cmd.env("ZAPREQ_CONFIG_DIR", config_dir.path());
     cmd
 }
 
@@ -26,7 +26,7 @@ fn request_without_follow_does_not_hit_redirect_target() {
         .expect(0)
         .create();
 
-    ferrite(&cfg)
+    zapreq(&cfg)
         .args(["GET", &format!("{}/start", server.url())])
         .assert()
         .success();
@@ -52,7 +52,7 @@ fn request_with_follow_reaches_redirect_target() {
         .with_body("redirect-ok")
         .create();
 
-    let assert = ferrite(&cfg)
+    let assert = zapreq(&cfg)
         .args(["GET", &format!("{}/start", server.url()), "--follow"])
         .assert()
         .success();

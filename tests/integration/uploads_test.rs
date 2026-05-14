@@ -3,9 +3,9 @@ use assert_cmd::Command;
 use mockito::Matcher;
 use tempfile::TempDir;
 
-fn ferrite(config_dir: &TempDir) -> Command {
+fn zapreq(config_dir: &TempDir) -> Command {
     let mut cmd = Command::cargo_bin("http").expect("binary should build");
-    cmd.env("FERRITE_CONFIG_DIR", config_dir.path());
+    cmd.env("ZAPREQ_CONFIG_DIR", config_dir.path());
     cmd
 }
 
@@ -30,7 +30,7 @@ fn form_file_upload_sends_multipart_body() {
         .with_body("ok")
         .create();
 
-    ferrite(&cfg)
+    zapreq(&cfg)
         .args([
             "POST",
             &format!("{}/upload", server.url()),
@@ -62,7 +62,7 @@ fn data_from_file_operator_reads_text_payload() {
         .with_status(200)
         .create();
 
-    ferrite(&cfg)
+    zapreq(&cfg)
         .args([
             "POST",
             &format!("{}/text", server.url()),
@@ -89,7 +89,7 @@ fn json_from_file_operator_reads_json_payload() {
         .with_status(200)
         .create();
 
-    ferrite(&cfg)
+    zapreq(&cfg)
         .args([
             "POST",
             &format!("{}/json-file", server.url()),

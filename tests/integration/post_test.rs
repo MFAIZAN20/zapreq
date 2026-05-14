@@ -3,9 +3,9 @@ use assert_cmd::Command;
 use mockito::Matcher;
 use tempfile::TempDir;
 
-fn ferrite(config_dir: &TempDir) -> Command {
+fn zapreq(config_dir: &TempDir) -> Command {
     let mut cmd = Command::cargo_bin("http").expect("binary should build");
-    cmd.env("FERRITE_CONFIG_DIR", config_dir.path());
+    cmd.env("ZAPREQ_CONFIG_DIR", config_dir.path());
     cmd
 }
 
@@ -22,7 +22,7 @@ fn post_with_equals_sends_json_body() {
         .match_body(Matcher::JsonString(r#"{"key":"value"}"#.to_string()))
         .with_status(200)
         .create();
-    ferrite(&cfg)
+    zapreq(&cfg)
         .args(["POST", &format!("{}/post", server.url()), "key=value"])
         .assert()
         .success();
@@ -40,7 +40,7 @@ fn post_with_colon_equals_sends_raw_json_value() {
         ))
         .with_status(200)
         .create();
-    ferrite(&cfg)
+    zapreq(&cfg)
         .args([
             "POST",
             &format!("{}/post", server.url()),
@@ -64,7 +64,7 @@ fn post_form_sends_urlencoded() {
         .match_body(Matcher::Regex("a=1".to_string()))
         .with_status(200)
         .create();
-    ferrite(&cfg)
+    zapreq(&cfg)
         .args(["POST", &format!("{}/form", server.url()), "--form", "a=1"])
         .assert()
         .success();
@@ -83,7 +83,7 @@ fn content_type_json_set_automatically() {
         )
         .with_status(200)
         .create();
-    ferrite(&cfg)
+    zapreq(&cfg)
         .args(["POST", &format!("{}/ct", server.url()), "a=1"])
         .assert()
         .success();
@@ -95,7 +95,7 @@ fn inferred_post_when_body_items_present() {
     let cfg = TempDir::new().expect("temp dir");
     let mut server = common::mock_server();
     let m = server.mock("POST", "/infer").with_status(200).create();
-    ferrite(&cfg)
+    zapreq(&cfg)
         .args([&format!("{}/infer", server.url()), "a=1"])
         .assert()
         .success();
@@ -111,7 +111,7 @@ fn multiple_equals_fields_merged_json() {
         .match_body(Matcher::JsonString(r#"{"a":"1","b":"2"}"#.to_string()))
         .with_status(200)
         .create();
-    ferrite(&cfg)
+    zapreq(&cfg)
         .args(["POST", &format!("{}/merge", server.url()), "a=1", "b=2"])
         .assert()
         .success();
@@ -123,7 +123,7 @@ fn verbose_prints_request_and_response() {
     let cfg = TempDir::new().expect("temp dir");
     let mut server = common::mock_server();
     let _m = common::mock_text(&mut server, "POST", "/v", 200, "ok");
-    let assert = ferrite(&cfg)
+    let assert = zapreq(&cfg)
         .args(["POST", &format!("{}/v", server.url()), "-v", "a=1"])
         .assert()
         .success();
@@ -137,7 +137,7 @@ fn empty_post_sends_no_body() {
     let cfg = TempDir::new().expect("temp dir");
     let mut server = common::mock_server();
     let m = server.mock("POST", "/empty").with_status(200).create();
-    ferrite(&cfg)
+    zapreq(&cfg)
         .args(["POST", &format!("{}/empty", server.url())])
         .assert()
         .success();

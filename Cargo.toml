@@ -1,13 +1,13 @@
 [package]
-name = "ferrite"
+name = "zapreq"
 version = "0.1.0"
 edition = "2021"
 authors = ["Muhammad Faizan <mfkhalil683@gmail.com>"]
 description = "A fast, friendly HTTP client for the terminal"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/MFAIZAN20/ferrite"
-homepage = "https://github.com/MFAIZAN20/ferrite"
-documentation = "https://docs.rs/ferrite"
+repository = "https://github.com/MFAIZAN20/zapreq"
+homepage = "https://github.com/MFAIZAN20/zapreq"
+documentation = "https://docs.rs/zapreq"
 keywords = ["http", "cli", "rest", "api", "curl"]
 categories = ["command-line-utilities", "web-programming::http-client"]
 readme = "README.md"

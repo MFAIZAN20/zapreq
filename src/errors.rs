@@ -1,7 +1,7 @@
 /// CAUS-INTERNAL-51, CAUS-INTERNAL-55:
 /// Regeneration error model for user-facing CLI diagnostics.
 #[derive(thiserror::Error, Debug)]
-pub enum FerriteError {
+pub enum ZapReqError {
     #[error("Connection failed: {0}")]
     Network(String),
 
@@ -33,14 +33,14 @@ pub enum FerriteError {
     Tls(String),
 }
 
-impl From<reqwest::Error> for FerriteError {
+impl From<reqwest::Error> for ZapReqError {
     fn from(e: reqwest::Error) -> Self {
         if e.is_timeout() {
-            FerriteError::Network(format!("request timed out: {e}"))
+            ZapReqError::Network(format!("request timed out: {e}"))
         } else if e.is_connect() {
-            FerriteError::Network(format!("connection refused: {e}"))
+            ZapReqError::Network(format!("connection refused: {e}"))
         } else {
-            FerriteError::Network(e.to_string())
+            ZapReqError::Network(e.to_string())
         }
     }
 }

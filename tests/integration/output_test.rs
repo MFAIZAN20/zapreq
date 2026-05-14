@@ -2,9 +2,9 @@ use crate::common;
 use assert_cmd::Command;
 use tempfile::TempDir;
 
-fn ferrite(config_dir: &TempDir) -> Command {
+fn zapreq(config_dir: &TempDir) -> Command {
     let mut cmd = Command::cargo_bin("http").expect("binary should build");
-    cmd.env("FERRITE_CONFIG_DIR", config_dir.path());
+    cmd.env("ZAPREQ_CONFIG_DIR", config_dir.path());
     cmd
 }
 
@@ -19,7 +19,7 @@ fn json_pretty_printed_with_indent() {
         200,
         serde_json::json!({"a":{"b":1}}),
     );
-    let assert = ferrite(&cfg)
+    let assert = zapreq(&cfg)
         .args(["GET", &format!("{}/json", server.url())])
         .assert()
         .success();
@@ -37,7 +37,7 @@ fn xml_response_indented() {
         .with_header("content-type", "application/xml")
         .with_body("<root><item>1</item></root>")
         .create();
-    let assert = ferrite(&cfg)
+    let assert = zapreq(&cfg)
         .args(["GET", &format!("{}/xml", server.url())])
         .assert()
         .success();
@@ -55,7 +55,7 @@ fn binary_response_shows_warning() {
         .with_header("content-type", "application/octet-stream")
         .with_body("\0\0abc")
         .create();
-    let assert = ferrite(&cfg)
+    let assert = zapreq(&cfg)
         .args(["GET", &format!("{}/bin", server.url())])
         .assert()
         .success();
@@ -68,7 +68,7 @@ fn meta_flag_shows_metadata_box() {
     let cfg = TempDir::new().expect("temp dir");
     let mut server = common::mock_server();
     let _m = common::mock_text(&mut server, "GET", "/meta", 200, "ok");
-    let assert = ferrite(&cfg)
+    let assert = zapreq(&cfg)
         .args(["GET", &format!("{}/meta", server.url()), "--meta"])
         .assert()
         .success();
@@ -88,7 +88,7 @@ fn style_dracula_changes_theme_no_crash() {
         200,
         serde_json::json!({"ok":true}),
     );
-    ferrite(&cfg)
+    zapreq(&cfg)
         .args([
             "GET",
             &format!("{}/theme", server.url()),

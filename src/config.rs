@@ -62,16 +62,16 @@ pub fn default_config_path() -> Result<PathBuf> {
     Ok(config_root_dir()?.join("config.json"))
 }
 
-/// Returns ferrite config root directory.
+/// Returns zapreq config root directory.
 pub fn config_root_dir() -> Result<PathBuf> {
-    if let Ok(override_root) = std::env::var("FERRITE_CONFIG_DIR") {
+    if let Ok(override_root) = std::env::var("ZAPREQ_CONFIG_DIR") {
         let trimmed = override_root.trim();
         if !trimmed.is_empty() {
             return Ok(PathBuf::from(trimmed));
         }
     }
     let config_root = dirs::config_dir().context("could not resolve user config directory")?;
-    Ok(config_root.join("ferrite"))
+    Ok(config_root.join("zapreq"))
 }
 
 /// CAUS-CORERUNTIM-04:
@@ -90,7 +90,7 @@ pub fn load_config() -> Result<AppConfig> {
     Ok(config)
 }
 
-/// Loads an environment profile from ~/.config/ferrite/envs/{name}.json.
+/// Loads an environment profile from ~/.config/zapreq/envs/{name}.json.
 pub fn load_profile(name: &str) -> Result<EnvProfile> {
     let path = config_root_dir()?.join("envs").join(format!("{name}.json"));
 
@@ -130,7 +130,7 @@ pub fn merge_defaults(config: &AppConfig, argv: &mut Vec<String>) {
 
     let explicit = argv.iter().skip(1).cloned().collect::<Vec<_>>();
 
-    // Priority: built-in < config < FERRITE_DEFAULT_OPTIONS < explicit CLI
+    // Priority: built-in < config < ZAPREQ_DEFAULT_OPTIONS < explicit CLI
     let built_in = built_in_default_options();
     let config_defaults = config_default_options(config);
     let env_defaults = env_default_options();
@@ -183,9 +183,9 @@ fn config_default_options(config: &AppConfig) -> Vec<String> {
 }
 
 /// CAUS-CORERUNTIM-04:
-/// Parses environment-provided default CLI options from FERRITE_DEFAULT_OPTIONS.
+/// Parses environment-provided default CLI options from ZAPREQ_DEFAULT_OPTIONS.
 fn env_default_options() -> Vec<String> {
-    let raw = match std::env::var("FERRITE_DEFAULT_OPTIONS") {
+    let raw = match std::env::var("ZAPREQ_DEFAULT_OPTIONS") {
         Ok(v) => v,
         Err(_) => return Vec::new(),
     };
@@ -229,7 +229,7 @@ fn default_scheme() -> String {
 }
 
 fn default_plugins_dir() -> String {
-    "~/.config/ferrite/plugins".to_string()
+    "~/.config/zapreq/plugins".to_string()
 }
 
 fn default_output_theme() -> String {

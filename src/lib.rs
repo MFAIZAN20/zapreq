@@ -15,5 +15,5 @@ pub mod response;
 pub mod sessions;
 pub mod utils;
 
-pub use errors::FerriteError;
+pub use errors::ZapReqError;
 pub use items::{CollectedItems, RequestItem};

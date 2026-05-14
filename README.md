@@ -1,20 +1,20 @@
-# ferrite
+# zapreq
 
 > A fast, friendly HTTP client for the terminal — HTTPie reimagined in Rust.
 
-[![Crates.io](https://img.shields.io/crates/v/ferrite.svg)](https://crates.io/crates/ferrite)
-[![CI](https://github.com/MFAIZAN20/ferrite/actions/workflows/ci.yml/badge.svg)](https://github.com/MFAIZAN20/ferrite/actions/workflows/ci.yml)
+[![Crates.io](https://img.shields.io/crates/v/zapreq.svg)](https://crates.io/crates/zapreq)
+[![CI](https://github.com/MFAIZAN20/zapreq/actions/workflows/ci.yml/badge.svg)](https://github.com/MFAIZAN20/zapreq/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
 [![Rust](https://img.shields.io/badge/rust-stable-orange.svg)](https://www.rust-lang.org)
 
-`ferrite` installs an `http` binary. If you know HTTPie, you already know ferrite — same
+`zapreq` installs an `http` binary. If you know HTTPie, you already know zapreq — same
 syntax, faster startup, lower memory, and a handful of features HTTPie never shipped.
 
 ---
 
 ## Table of contents
 
-- [Why ferrite](#why-ferrite)
+- [Why zapreq](#why-zapreq)
 - [Install](#install)
 - [Quick start](#quick-start)
 - [Request items](#request-items)
@@ -34,20 +34,20 @@ syntax, faster startup, lower memory, and a handful of features HTTPie never shi
 
 ---
 
-## Why ferrite
+## Why zapreq
 
-- **~3 MB binary, ~5 ms startup.** HTTPie ships ~15 MB and takes ~200 ms. Ferrite is
+- **~3 MB binary, ~5 ms startup.** HTTPie ships ~15 MB and takes ~200 ms. ZapReq is
   compiled Rust — no interpreter, no import overhead.
 - **HTTPie-compatible syntax.** Every `key=value`, `key:=value`, `key==value` item works
   exactly as you expect.
 - **Full auth coverage.** Basic, Bearer, and Digest (RFC 7616, MD5 + SHA-256) with an
   automatic 401 retry cycle for Digest.
 - **Session persistence.** Cookies, headers, and auth are saved to
-  `~/.config/ferrite/sessions/` and restored on the next request.
+  `~/.config/zapreq/sessions/` and restored on the next request.
 - **Environment profiles.** Switch between `dev`, `staging`, and `prod` with one flag.
 - **Request collections.** Save a request by name, replay it later — Postman-style,
   entirely in the terminal.
-- **AI assistant.** Describe a request in plain English; ferrite generates and runs it.
+- **AI assistant.** Describe a request in plain English; zapreq generates and runs it.
 - **Response diffing.** Compare two endpoints side by side, key by key.
 - **Zero Python dependency.** One binary, no virtualenv, no pip.
 
@@ -56,22 +56,22 @@ syntax, faster startup, lower memory, and a handful of features HTTPie never shi
 ## Install
 
 ```bash
-cargo install ferrite
+cargo install zapreq
 ```
 
 Pre-built binaries for Linux, macOS (x86 + ARM), and Windows are attached to every
-[GitHub release](https://github.com/MFAIZAN20/ferrite/releases). Download and place
+[GitHub release](https://github.com/MFAIZAN20/zapreq/releases). Download and place
 the binary on your `PATH` if you do not have a Rust toolchain.
 
 **Package managers**
 
 ```bash
 # Arch Linux (AUR)
-yay -S ferrite
+yay -S zapreq
 
 # macOS / Linux (Homebrew tap)
-brew tap MFAIZAN20/ferrite
-brew install ferrite
+brew tap MFAIZAN20/zapreq
+brew install zapreq
 ```
 
 ---
@@ -194,7 +194,7 @@ The `--auth-type` flag defaults to `basic`. Credentials passed via `--auth` are 
 ## Sessions
 
 Named sessions persist headers, cookies, and auth credentials between requests. Session
-files live in `~/.config/ferrite/sessions/{hostname}/{name}.json`.
+files live in `~/.config/zapreq/sessions/{hostname}/{name}.json`.
 
 ```bash
 # Log in — session is created and cookies are saved
@@ -212,7 +212,7 @@ Session file format:
 
 ```json
 {
-  "headers":  { "X-Client": "ferrite" },
+  "headers":  { "X-Client": "zapreq" },
   "auth":     { "type": "basic", "username": "faizan", "password": "secret" },
   "cookies":  [{ "name": "sid", "value": "abc", "domain": "api.example.com", "path": "/" }],
   "meta":     { "created": "2026-02-01T10:00:00Z", "last_used": "2026-05-01T14:22:00Z" }
@@ -224,7 +224,7 @@ Session file format:
 ## Environment profiles
 
 Profiles let you switch base URL, headers, and variable values with a single flag.
-Profile files live in `~/.config/ferrite/envs/{name}.json`.
+Profile files live in `~/.config/zapreq/envs/{name}.json`.
 
 ```json
 {
@@ -269,7 +269,7 @@ http run login --env-profile prod
 http delete login
 ```
 
-Collection files live in `~/.config/ferrite/collections/{alias}.json`.
+Collection files live in `~/.config/zapreq/collections/{alias}.json`.
 
 ---
 
@@ -278,7 +278,7 @@ Collection files live in `~/.config/ferrite/collections/{alias}.json`.
 Set an OpenAI-compatible API key:
 
 ```bash
-export FERRITE_AI_KEY=sk-...
+export ZAPREQ_AI_KEY=sk-...
 ```
 
 Describe your request in plain English:
@@ -287,7 +287,7 @@ Describe your request in plain English:
 http ai "POST to https://api.example.com/users with name Faizan and role admin"
 ```
 
-Ferrite prints the generated command before executing it so you can see exactly what
+ZapReq prints the generated command before executing it so you can see exactly what
 it built. The assistant uses a structured JSON prompt — it never guesses; it constructs
 a concrete request from your description.
 
@@ -295,7 +295,7 @@ a concrete request from your description.
 
 ## Response diffing
 
-Compare two API endpoints key by key. Ferrite flattens both JSON responses into
+Compare two API endpoints key by key. ZapReq flattens both JSON responses into
 dot-notation paths and shows what changed.
 
 ```bash
@@ -343,13 +343,13 @@ A progress bar is shown during the download:
 
 ## Configuration
 
-Config file: `~/.config/ferrite/config.json`
+Config file: `~/.config/zapreq/config.json`
 
 ```json
 {
   "default_options": ["--style=monokai"],
   "default_scheme":  "https",
-  "plugins_dir":     "~/.config/ferrite/plugins",
+  "plugins_dir":     "~/.config/zapreq/plugins",
   "output_theme":    "monokai",
   "pretty":          "all",
   "verify":          true
@@ -360,7 +360,7 @@ Config file: `~/.config/ferrite/config.json`
 |---|---|---|---|
 | `default_options` | `string[]` | `[]` | Flags prepended before every invocation |
 | `default_scheme` | `string` | `https` | Scheme used when URL has no scheme |
-| `plugins_dir` | `string` | `~/.config/ferrite/plugins` | Directory scanned for plugin manifests |
+| `plugins_dir` | `string` | `~/.config/zapreq/plugins` | Directory scanned for plugin manifests |
 | `output_theme` | `string` | `monokai` | Default syntax theme |
 | `pretty` | `string` | `all` | Default pretty mode |
 | `verify` | `bool` | `true` | TLS certificate verification |
@@ -370,7 +370,7 @@ Precedence order (highest to lowest):
 ```
 Explicit CLI flags
   ↓
-FERRITE_DEFAULT_OPTIONS environment variable
+ZAPREQ_DEFAULT_OPTIONS environment variable
   ↓
 config.json default_options
   ↓
@@ -389,10 +389,10 @@ are discovered from `plugins_dir` via `.toml` manifest files.
 http plugins list
 
 # Install instructions for a community plugin
-http plugins install ferrite-plugin-aws
+http plugins install zapreq-plugin-aws
 ```
 
-Manifest format (`~/.config/ferrite/plugins/my-plugin.toml`):
+Manifest format (`~/.config/zapreq/plugins/my-plugin.toml`):
 
 ```toml
 [plugin]
@@ -402,14 +402,14 @@ description = "Custom HMAC authentication"
 auth_types  = ["hmac"]
 ```
 
-See the [plugin authoring guide](https://github.com/MFAIZAN20/ferrite/wiki/plugins) for
-how to build and distribute a ferrite plugin.
+See the [plugin authoring guide](https://github.com/MFAIZAN20/zapreq/wiki/plugins) for
+how to build and distribute a zapreq plugin.
 
 ---
 
 ## Comparison with HTTPie
 
-| Feature | HTTPie | ferrite |
+| Feature | HTTPie | zapreq |
 |---|---|---|
 | JSON / form / multipart | ✅ | ✅ |
 | Sessions | ✅ | ✅ |
@@ -431,8 +431,8 @@ how to build and distribute a ferrite plugin.
 
 ```bash
 # Clone
-git clone https://github.com/MFAIZAN20/ferrite
-cd ferrite
+git clone https://github.com/MFAIZAN20/zapreq
+cd zapreq
 
 # Run tests
 cargo test --all

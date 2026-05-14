@@ -47,7 +47,7 @@ struct Message {
 
 /// Calls an OpenAI-compatible endpoint and returns a normalized CLI command object.
 pub async fn ai_assist(prompt: &str, api_key: &str) -> Result<CliCommand> {
-    let endpoint = std::env::var("FERRITE_AI_ENDPOINT")
+    let endpoint = std::env::var("ZAPREQ_AI_ENDPOINT")
         .unwrap_or_else(|_| "https://api.openai.com/v1/chat/completions".to_string());
 
     let system_prompt = "You are an HTTP request builder. Given a natural language description, output ONLY a JSON object: { method: string, url: string, headers: {key: value}, body: {key: value}, query: {key: value} }. No explanation. JSON only.";

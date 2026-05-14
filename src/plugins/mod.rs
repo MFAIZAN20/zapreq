@@ -15,7 +15,7 @@ pub struct PluginInfo {
 }
 
 /// Runtime plugin contract.
-pub trait FerritePlugin: Send + Sync {
+pub trait ZapReqPlugin: Send + Sync {
     fn info(&self) -> PluginInfo;
     fn auth_plugin(&self) -> Option<Box<dyn crate::auth::AuthPlugin>> {
         None
