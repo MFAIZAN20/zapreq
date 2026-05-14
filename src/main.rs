@@ -7,9 +7,7 @@ use std::time::Instant;
 use zapreq::ai::ai_assist;
 use zapreq::auth::{build_auth, AuthRegistry};
 use zapreq::cli::{parse_cli_from, CliArgs, Command, PluginCommand};
-use zapreq::collections::{
-    delete_request, list_requests, load_request, run_request, save_request,
-};
+use zapreq::collections::{delete_request, list_requests, load_request, run_request, save_request};
 use zapreq::config::{apply_profile, load_config, load_profile, merge_defaults, CliResolved};
 use zapreq::diff::{diff_requests, print_diff};
 use zapreq::download::download;
