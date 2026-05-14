@@ -22,3 +22,4 @@ jobs:
       - run: cargo test --all --locked
       - run: cargo clippy --all-targets --all-features -- -D warnings
       - run: cargo fmt --check
+        if: matrix.os == 'ubuntu-latest' && matrix.rust == 'stable'
