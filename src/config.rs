@@ -144,6 +144,7 @@ pub fn merge_defaults(config: &AppConfig, argv: &mut Vec<String>) {
     merged.extend(env_defaults);
     merged.extend(explicit);
 
+    resolve_body_mode_conflicts(&mut merged);
     *argv = merged;
 }
 
@@ -190,6 +191,37 @@ fn env_default_options() -> Vec<String> {
     };
 
     raw.split_whitespace().map(|s| s.to_string()).collect()
+}
+
+fn resolve_body_mode_conflicts(argv: &mut Vec<String>) {
+    if argv.len() <= 1 {
+        return;
+    }
+
+    let mut last_mode_index = None;
+    for (idx, token) in argv.iter().enumerate().skip(1) {
+        if is_body_mode_flag(token) {
+            last_mode_index = Some(idx);
+        }
+    }
+
+    let Some(last_idx) = last_mode_index else {
+        return;
+    };
+
+    let mut filtered = Vec::with_capacity(argv.len());
+    filtered.push(argv[0].clone());
+    for (idx, token) in argv.iter().enumerate().skip(1) {
+        if is_body_mode_flag(token) && idx != last_idx {
+            continue;
+        }
+        filtered.push(token.clone());
+    }
+    *argv = filtered;
+}
+
+fn is_body_mode_flag(token: &str) -> bool {
+    matches!(token, "--json" | "-j" | "--form" | "-f" | "--multipart")
 }
 
 fn default_scheme() -> String {

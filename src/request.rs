@@ -147,7 +147,8 @@ impl RequestEngine {
         }
 
         let mut body_preview: Option<serde_json::Value> = None;
-        if args.multipart {
+        let has_file_uploads = !collected.files.is_empty();
+        if args.multipart || has_file_uploads {
             let mut form = Form::new();
             for (k, v) in &collected.data_strings {
                 form = form.text(k.clone(), v.clone());
