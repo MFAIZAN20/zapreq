@@ -1,6 +1,6 @@
 [package]
 name = "zapreq"
-version = "0.1.3"
+version = "0.1.4"
 edition = "2021"
 authors = ["Muhammad Faizan <mfkhalil683@gmail.com>"]
 description = "A fast, friendly HTTP client for the terminal"
