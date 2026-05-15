@@ -1,24 +1,38 @@
 use anyhow::{anyhow, Context, Result};
 use colored::Colorize;
 use regex::Regex;
+use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::time::Instant;
 
 use zapreq::ai::ai_assist;
 use zapreq::auth::{build_auth, AuthRegistry};
-use zapreq::cli::{parse_cli_from, CliArgs, Command, PluginCommand};
-use zapreq::collections::{delete_request, list_requests, load_request, run_request, save_request};
+use zapreq::cli::{
+    parse_cli_from, CliArgs, CollectionsCommand, Command, EnvCommand, PluginCommand,
+    RequestsCommand, SecretCommand,
+};
+use zapreq::collections::{
+    add_request_to_workspace, create_workspace, delete_request, export_workspace, import_workspace,
+    list_requests, list_workspace_requests, list_workspaces, load_request, load_workspace_request,
+    migrate_legacy_collections, parse_export_format, run_request, save_request,
+};
 use zapreq::config::{apply_profile, load_config, load_profile, merge_defaults, CliResolved};
 use zapreq::diff::{diff_requests, print_diff};
 use zapreq::download::download;
+use zapreq::env_cmd::{get_profile, list_profiles, validate_profile};
 use zapreq::items::parse_request_items;
 use zapreq::output::{build_print_opts, render_exchange_from_cli};
-use zapreq::plugins::manager::{install_plugin, print_plugin_list, uninstall_plugin};
+use zapreq::plugins::manager::{
+    install_plugin, print_plugin_list, run_plugin_command, uninstall_plugin, validate_plugins,
+};
 use zapreq::request::{RequestEngine, RequestSpec};
 use zapreq::response::ResponseData;
+use zapreq::secrets::{get_secret, list_secret_keys, mask_secret, set_secret};
 use zapreq::sessions::{
     apply_session_to_request, load_session, save_session, update_session_from_exchange,
 };
+use zapreq::testing::{evaluate_response, render_text_report, TestOptions};
+use zapreq::tui::run_advanced_tui;
 use zapreq::utils::{humanize_bytes, humanize_duration, terminal_width, truncate_str};
 
 /// CAUS-CORERUNTIM-01, CAUS-CORERUNTIM-02, CAUS-CORERUNTIM-03, CAUS-CORERUNTIM-04, CAUS-CORERUNTIM-05, CAUS-INTERNAL-52:
@@ -30,6 +44,7 @@ fn run() -> Result<i32> {
         merge_defaults(&config, &mut argv);
     }
     let mut args = parse_cli_from(argv).context("failed to parse CLI args")?;
+    let mut pending_test: Option<(TestOptions, String)> = None;
 
     if let Some(command) = args.command.clone() {
         match command {
@@ -38,6 +53,13 @@ fn run() -> Result<i32> {
                     PluginCommand::Install { name } => install_plugin(&name)?,
                     PluginCommand::Uninstall { name } => uninstall_plugin(&name, &config)?,
                     PluginCommand::List => print_plugin_list(&config)?,
+                    PluginCommand::Validate => {
+                        let issues = validate_plugins(&config)?;
+                        return Ok(if issues == 0 { 0 } else { 1 });
+                    }
+                    PluginCommand::Run { name, args } => {
+                        return run_plugin_command(&name, &args, &config);
+                    }
                 }
                 return Ok(0);
             }
@@ -48,21 +70,12 @@ fn run() -> Result<i32> {
                 println!("Saved request as '{alias}'");
                 return Ok(0);
             }
+            Command::Tui => {
+                run_advanced_tui(&config)?;
+                return Ok(0);
+            }
             Command::Run { alias, env_profile } => {
-                run_request(&alias, env_profile.as_deref())?;
-                let entry = load_request(&alias)
-                    .with_context(|| format!("failed to load collection '{alias}'"))?;
-                let mut synthetic =
-                    vec!["http".to_string(), entry.method.clone(), entry.url.clone()];
-                synthetic.extend(entry.items.clone());
-                merge_defaults(&config, &mut synthetic);
-                args = parse_cli_from(synthetic).context("failed to parse saved request")?;
-                if args.env_profile.is_none() {
-                    args.env_profile = env_profile;
-                }
-                for (k, v) in entry.headers {
-                    args.request_items.push(format!("{k}:{v}"));
-                }
+                args = build_args_from_collection(&alias, env_profile, &config)?;
             }
             Command::List => {
                 let entries = list_requests().context("failed to list saved requests")?;
@@ -81,7 +94,13 @@ fn run() -> Result<i32> {
                 println!("Deleted request '{alias}'");
                 return Ok(0);
             }
-            Command::Ai { prompt } => {
+            Command::Ai {
+                prompt,
+                send,
+                save,
+                explain,
+                env_profile,
+            } => {
                 let api_key = match std::env::var("ZAPREQ_AI_KEY") {
                     Ok(v) if !v.trim().is_empty() => v,
                     _ => {
@@ -125,11 +144,229 @@ fn run() -> Result<i32> {
                     generated_items.join(" ")
                 );
                 println!("Generated command: {command_preview}");
+                if explain {
+                    println!("Method: {}", method);
+                    println!("URL: {}", generated.url);
+                    println!("Headers: {}", generated.headers.len());
+                    println!("Query params: {}", generated.query.len());
+                    println!("Body fields: {}", generated.body.len());
+                }
 
-                let mut synthetic = vec!["http".to_string(), method, generated.url];
-                synthetic.extend(generated_items);
+                let mut synthetic = vec!["http".to_string(), method.clone(), generated.url.clone()];
+                synthetic.extend(generated_items.clone());
                 merge_defaults(&config, &mut synthetic);
-                args = parse_cli_from(synthetic).context("failed to parse AI-generated command")?;
+                let mut generated_cli =
+                    parse_cli_from(synthetic).context("failed to parse AI-generated command")?;
+                if generated_cli.env_profile.is_none() {
+                    generated_cli.env_profile = env_profile;
+                }
+
+                if let Some(alias) = save {
+                    save_request(&alias, &generated_cli).with_context(|| {
+                        format!("failed to save AI-generated request '{alias}'")
+                    })?;
+                    println!("Saved AI-generated request as '{alias}'");
+                }
+
+                if !send {
+                    println!("Dry run only. Re-run with `--send` to execute.");
+                    return Ok(0);
+                }
+
+                args = generated_cli;
+            }
+            Command::Test {
+                expect_status,
+                expect_header,
+                expect_json,
+                expect_body_contains,
+                max_time_ms,
+                report,
+                request,
+            } => {
+                if request.is_empty() {
+                    return Err(anyhow!(
+                        "test requires request tokens: `http test [ASSERTS] -- METHOD URL [ITEMS...]`"
+                    ));
+                }
+                let mut parsed = cli_from_saved_request_tokens(&request, &config)
+                    .context("failed to parse test request tokens")?;
+                parsed.command = None;
+                args = parsed;
+                pending_test = Some((
+                    TestOptions {
+                        expect_status,
+                        expect_headers: expect_header,
+                        expect_json,
+                        expect_body_contains,
+                        max_time_ms,
+                    },
+                    report,
+                ));
+            }
+            Command::Env { command } => {
+                match command {
+                    EnvCommand::List => {
+                        let profiles = list_profiles().context("failed to list env profiles")?;
+                        if profiles.is_empty() {
+                            println!("No env profiles found.");
+                        } else {
+                            for name in profiles {
+                                println!("{name}");
+                            }
+                        }
+                    }
+                    EnvCommand::Show { name } => {
+                        let profile =
+                            get_profile(&name).with_context(|| format!("failed to show {name}"))?;
+                        let text = serde_json::to_string_pretty(&profile)
+                            .context("failed to serialize profile")?;
+                        println!("{text}");
+                    }
+                    EnvCommand::Validate { name } => {
+                        let issues = validate_profile(&name)
+                            .with_context(|| format!("failed to validate {name}"))?;
+                        if issues.is_empty() {
+                            println!("Profile '{name}' is valid.");
+                        } else {
+                            println!("Profile '{name}' has {} issue(s):", issues.len());
+                            for issue in issues {
+                                println!("- {issue}");
+                            }
+                            return Ok(1);
+                        }
+                    }
+                }
+                return Ok(0);
+            }
+            Command::Collections { command } => {
+                match command {
+                    CollectionsCommand::List => {
+                        let workspaces = list_workspaces().context("failed to list workspaces")?;
+                        if workspaces.is_empty() {
+                            println!("No workspaces found.");
+                        } else {
+                            for ws in workspaces {
+                                println!(
+                                    "{}  requests={}  updated={}",
+                                    ws.name, ws.request_count, ws.updated
+                                );
+                            }
+                        }
+                    }
+                    CollectionsCommand::New { name } => {
+                        let ws = create_workspace(&name)
+                            .with_context(|| format!("failed to create workspace '{name}'"))?;
+                        println!(
+                            "Workspace '{}' ready ({} requests).",
+                            ws.name,
+                            ws.requests.len()
+                        );
+                    }
+                    CollectionsCommand::Import { name, path } => {
+                        let ws = import_workspace(&name, &path).with_context(|| {
+                            format!("failed to import workspace from '{}'", path)
+                        })?;
+                        println!(
+                            "Imported workspace '{}' with {} request(s).",
+                            ws.name,
+                            ws.requests.len()
+                        );
+                    }
+                    CollectionsCommand::Export { name, path, format } => {
+                        let fmt = parse_export_format(&format)?;
+                        export_workspace(&name, &path, fmt)
+                            .with_context(|| format!("failed to export workspace '{}'", name))?;
+                        println!("Exported workspace '{}' to {}", name, path);
+                    }
+                    CollectionsCommand::Migrate { workspace } => {
+                        let report = migrate_legacy_collections(&workspace)?;
+                        println!(
+                            "Migration complete -> workspace='{}' imported={} skipped_existing={}",
+                            report.workspace, report.imported, report.skipped_existing
+                        );
+                    }
+                }
+                return Ok(0);
+            }
+            Command::Requests { command } => match command {
+                RequestsCommand::List { workspace } => {
+                    let requests = list_workspace_requests(&workspace)
+                        .with_context(|| format!("failed to list requests in '{}'", workspace))?;
+                    if requests.is_empty() {
+                        println!("Workspace '{}' has no requests.", workspace);
+                    } else {
+                        for request in requests {
+                            println!("{}  {} {}", request.name, request.method, request.url);
+                        }
+                    }
+                    return Ok(0);
+                }
+                RequestsCommand::Run {
+                    workspace,
+                    request,
+                    env_profile,
+                } => {
+                    args = build_args_from_workspace_request(
+                        &workspace,
+                        &request,
+                        env_profile,
+                        &config,
+                    )?;
+                }
+                RequestsCommand::Save {
+                    workspace,
+                    name,
+                    request,
+                } => {
+                    let parsed = cli_from_saved_request_tokens(&request, &config)
+                        .context("failed to parse request tokens for workspace save")?;
+                    add_request_to_workspace(&workspace, &name, &parsed).with_context(|| {
+                        format!(
+                            "failed to save request '{}' to workspace '{}'",
+                            name, workspace
+                        )
+                    })?;
+                    println!("Saved request '{}' to workspace '{}'.", name, workspace);
+                    return Ok(0);
+                }
+            },
+            Command::Secrets { command } => {
+                match command {
+                    SecretCommand::Set { key, value } => {
+                        set_secret(&key, &value)
+                            .with_context(|| format!("failed to save secret '{key}'"))?;
+                        println!("Secret '{key}' saved.");
+                    }
+                    SecretCommand::Get { key, reveal } => {
+                        let value = get_secret(&key)
+                            .with_context(|| format!("failed to read secret '{key}'"))?;
+                        match value {
+                            Some(v) => {
+                                if reveal {
+                                    println!("{v}");
+                                } else {
+                                    println!("{}", mask_secret(&v));
+                                }
+                            }
+                            None => {
+                                println!("Secret '{key}' not found.");
+                                return Ok(1);
+                            }
+                        }
+                    }
+                    SecretCommand::List => {
+                        let keys = list_secret_keys().context("failed to list secrets")?;
+                        if keys.is_empty() {
+                            println!("No secrets stored.");
+                        } else {
+                            for key in keys {
+                                println!("{key}");
+                            }
+                        }
+                    }
+                }
+                return Ok(0);
             }
             Command::Diff {
                 url_a,
@@ -184,6 +421,18 @@ fn run() -> Result<i32> {
             "{}:{}",
             substitute_placeholders(k, &resolved.variables),
             substitute_placeholders(v, &resolved.variables)
+        ));
+    }
+    let unresolved = unresolved_placeholders(
+        std::iter::once(resolved_url.as_str())
+            .chain(resolved_items.iter().map(|s| s.as_str()))
+            .collect::<Vec<_>>()
+            .as_slice(),
+    );
+    if !unresolved.is_empty() {
+        return Err(anyhow!(
+            "unresolved variables: {} (set them via --env, --env-profile, or REQUEST_ITEMS)",
+            unresolved.join(", ")
         ));
     }
     if args.download && args.continue_download {
@@ -318,12 +567,29 @@ fn run() -> Result<i32> {
         }
     }
 
+    if let Some((test_opts, report_kind)) = pending_test {
+        let report =
+            evaluate_response(&trace.method, &trace.url, &response, elapsed_ms, &test_opts);
+        if report_kind.eq_ignore_ascii_case("json") {
+            let json =
+                serde_json::to_string_pretty(&report).context("failed to serialize test report")?;
+            println!("{json}");
+        } else {
+            print!("{}", render_text_report(&report));
+        }
+        return Ok(if report.passed { 0 } else { 1 });
+    }
+
     render_exchange_from_cli(&trace, &response, &args, &config)
         .context("failed to render output")?;
     if args.verbose {
         if let Some(auth) = args.auth.as_deref() {
             eprintln!("Auth: {}", mask_auth(&args.auth_type, auth));
         }
+    }
+
+    if args.summary && !args.no_summary {
+        print_compact_summary(&trace, &response, elapsed_ms);
     }
 
     if args.meta {
@@ -348,7 +614,21 @@ fn run() -> Result<i32> {
 fn is_raw_subcommand_invocation(argv: &[String]) -> bool {
     matches!(
         argv.get(1).map(String::as_str),
-        Some("plugins" | "save" | "run" | "list" | "delete" | "ai" | "diff")
+        Some(
+            "plugins"
+                | "save"
+                | "run"
+                | "list"
+                | "delete"
+                | "ai"
+                | "test"
+                | "env"
+                | "collections"
+                | "requests"
+                | "secrets"
+                | "tui"
+                | "diff"
+        )
     )
 }
 
@@ -381,21 +661,53 @@ fn load_env_file(path: &str) -> Result<HashMap<String, String>> {
         if key.is_empty() {
             continue;
         }
-        out.insert(key.to_string(), v.trim().to_string());
+        let mut value = v.trim().to_string();
+        if value.starts_with('"') && value.ends_with('"') && value.len() >= 2 {
+            value = value[1..value.len() - 1].to_string();
+        } else if value.starts_with('\'') && value.ends_with('\'') && value.len() >= 2 {
+            value = value[1..value.len() - 1].to_string();
+        } else if let Some((head, _comment)) = value.split_once(" #") {
+            value = head.trim().to_string();
+        }
+        out.insert(key.to_string(), value);
     }
 
     Ok(out)
 }
 
 fn substitute_placeholders(input: &str, vars: &HashMap<String, String>) -> String {
-    let re = Regex::new(r"\{([A-Za-z_][A-Za-z0-9_]*)\}").expect("regex should compile");
+    let re = Regex::new(r"\{\{([A-Za-z_][A-Za-z0-9_]*)\}\}|\{([A-Za-z_][A-Za-z0-9_]*)\}")
+        .expect("regex should compile");
     re.replace_all(input, |caps: &regex::Captures<'_>| {
-        let key = &caps[1];
+        let key = caps
+            .get(1)
+            .or_else(|| caps.get(2))
+            .map(|m| m.as_str())
+            .unwrap_or_default();
         vars.get(key)
             .cloned()
             .unwrap_or_else(|| caps[0].to_string())
     })
-    .to_string()
+    .into_owned()
+}
+
+fn unresolved_placeholders(values: &[&str]) -> Vec<String> {
+    let re = Regex::new(r"\{\{([A-Za-z_][A-Za-z0-9_]*)\}\}|\{([A-Za-z_][A-Za-z0-9_]*)\}")
+        .expect("regex should compile");
+    let mut unresolved = BTreeSet::new();
+    for value in values {
+        for caps in re.captures_iter(value) {
+            let name = caps
+                .get(1)
+                .or_else(|| caps.get(2))
+                .map(|m| m.as_str())
+                .unwrap_or_default();
+            if !name.is_empty() {
+                unresolved.insert(name.to_string());
+            }
+        }
+    }
+    unresolved.into_iter().collect()
 }
 
 fn substitute_item_value(raw: &str, vars: &HashMap<String, String>) -> String {
@@ -520,6 +832,73 @@ fn cli_from_saved_request_tokens(
         return Err(anyhow!("nested subcommands are not allowed in `save`"));
     }
     Ok(parsed)
+}
+
+fn build_args_from_collection(
+    alias: &str,
+    env_profile: Option<String>,
+    config: &zapreq::config::Config,
+) -> Result<CliArgs> {
+    run_request(alias, env_profile.as_deref())?;
+    let entry =
+        load_request(alias).with_context(|| format!("failed to load collection '{alias}'"))?;
+    let mut synthetic = vec!["http".to_string(), entry.method.clone(), entry.url.clone()];
+    synthetic.extend(entry.items.clone());
+    merge_defaults(config, &mut synthetic);
+    let mut args = parse_cli_from(synthetic).context("failed to parse saved request")?;
+    if args.env_profile.is_none() {
+        args.env_profile = env_profile;
+    }
+    for (k, v) in entry.headers {
+        args.request_items.push(format!("{k}:{v}"));
+    }
+    Ok(args)
+}
+
+fn build_args_from_workspace_request(
+    workspace: &str,
+    request_ref: &str,
+    env_profile: Option<String>,
+    config: &zapreq::config::Config,
+) -> Result<CliArgs> {
+    let entry = load_workspace_request(workspace, request_ref).with_context(|| {
+        format!(
+            "failed to load request '{}' from '{}'",
+            request_ref, workspace
+        )
+    })?;
+    let mut synthetic = vec!["http".to_string(), entry.method.clone(), entry.url.clone()];
+    synthetic.extend(entry.items.clone());
+    merge_defaults(config, &mut synthetic);
+    let mut args = parse_cli_from(synthetic).context("failed to parse workspace request")?;
+    if args.env_profile.is_none() {
+        args.env_profile = env_profile;
+    }
+    for (k, v) in entry.headers {
+        args.request_items.push(format!("{k}:{v}"));
+    }
+    Ok(args)
+}
+
+fn print_compact_summary(
+    trace: &zapreq::response::RequestTrace,
+    response: &ResponseData,
+    elapsed_ms: u64,
+) {
+    let content_type = response
+        .content_type
+        .clone()
+        .unwrap_or_else(|| "unknown".to_string());
+    println!(
+        "{} {} -> {} {} ({} ms, {} bytes, {})",
+        trace.method,
+        trace.url,
+        response.status_code,
+        response.reason,
+        elapsed_ms,
+        response.body.len(),
+        content_type
+    );
 }
 
 fn mask_auth(auth_type: &str, auth: &str) -> String {

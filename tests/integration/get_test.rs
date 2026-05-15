@@ -13,9 +13,10 @@ fn zapreq(config_dir: &TempDir) -> Command {
 fn get_sends_user_agent() {
     let cfg = TempDir::new().expect("temp dir");
     let mut server = common::mock_server();
+    let ua = format!("zapreq/{}", env!("CARGO_PKG_VERSION"));
     let m = server
         .mock("GET", "/ua")
-        .match_header("user-agent", "zapreq/0.1.0")
+        .match_header("user-agent", ua.as_str())
         .with_status(200)
         .with_body("ok")
         .create();

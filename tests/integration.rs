@@ -21,3 +21,5 @@ mod redirects_test;
 mod sessions_test;
 #[path = "integration/uploads_test.rs"]
 mod uploads_test;
+#[path = "integration/workspaces_test.rs"]
+mod workspaces_test;

@@ -44,6 +44,8 @@ xmltree = "0.10"
 console = "0.15"
 thiserror = "1"
 toml = "0.8"
+ratatui = "0.28"
+crossterm = "0.28"
 
 [dev-dependencies]
 mockito = "1"

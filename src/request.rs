@@ -213,7 +213,8 @@ impl RequestEngine {
 /// CAUS-CORERUNTIM-03:
 /// Creates configured reqwest client for request execution.
 fn build_client(args: &CliArgs) -> Result<Client> {
-    let mut builder = Client::builder().user_agent("zapreq/0.1.0");
+    let user_agent = format!("zapreq/{}", env!("CARGO_PKG_VERSION"));
+    let mut builder = Client::builder().user_agent(user_agent);
 
     if let Some(timeout_s) = args.timeout {
         builder = builder.timeout(std::time::Duration::from_secs_f64(timeout_s));

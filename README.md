@@ -23,6 +23,9 @@ syntax, faster startup, lower memory, and a handful of features HTTPie never shi
 - [Sessions](#sessions)
 - [Environment profiles](#environment-profiles)
 - [Request collections](#request-collections)
+- [Terminal workspace](#terminal-workspace)
+- [API testing](#api-testing)
+- [Secrets](#secrets)
 - [AI assistant](#ai-assistant)
 - [Response diffing](#response-diffing)
 - [Download mode](#download-mode)
@@ -47,7 +50,8 @@ syntax, faster startup, lower memory, and a handful of features HTTPie never shi
 - **Environment profiles.** Switch between `dev`, `staging`, and `prod` with one flag.
 - **Request collections.** Save a request by name, replay it later — Postman-style,
   entirely in the terminal.
-- **AI assistant.** Describe a request in plain English; zapreq generates and runs it.
+- **AI assistant.** Describe a request in plain English; zapreq generates a concrete
+  command and runs it only when you opt in.
 - **Response diffing.** Compare two endpoints side by side, key by key.
 - **Zero Python dependency.** One binary, no virtualenv, no pip.
 
@@ -171,6 +175,13 @@ Default is `hb` (response headers + body). `--verbose` is shorthand for `HBhb`.
 
 **`--style` themes:** `monokai` (default), `solarized`, `dracula`, `autumn`.
 
+**Quick summary line**
+
+```bash
+# Append compact status/time/size summary
+http --summary GET https://httpbin.org/get
+```
+
 ---
 
 ## Authentication
@@ -271,6 +282,91 @@ http delete login
 
 Collection files live in `~/.config/zapreq/collections/{alias}.json`.
 
+Structured workspaces (v2):
+
+```bash
+# Create/list workspaces
+http collections new api
+http collections list
+
+# Save/list/run workspace requests
+http requests save api get-users -- GET https://api.example.com/users
+http requests list api
+http requests run api get-users
+
+# Migrate legacy aliases from ~/.config/zapreq/collections/*.json
+http collections migrate --workspace legacy
+```
+
+Import/export:
+
+```bash
+http collections export api ./api-workspace.json --format zapreq
+http collections export api ./api-postman.json --format postman
+http collections export api ./api-openapi.json --format openapi
+http collections import api2 ./api-workspace.json
+```
+
+---
+
+## Terminal workspace
+
+Open an interactive terminal workspace for saved requests:
+
+```bash
+http tui
+```
+
+The workspace provides:
+- multi-pane layout (workspaces, requests, response viewer)
+- keyboard navigation (`←/→`, `↑/↓`)
+- response tabs (`Tab`) for body, headers, meta, and raw
+- request filtering (`/` to type filter, `Enter` to apply, `Ctrl+u` to clear)
+- inline execution (`Enter`) with response rendered in-place
+- environment profile switching (`e`)
+
+---
+
+## API testing
+
+Assert API responses directly from the terminal:
+
+```bash
+http test --expect-status 200 --expect-header content-type~json -- GET https://httpbin.org/json
+```
+
+JSON assertions use `path=value` syntax:
+
+```bash
+http test --expect-json slideshow.title=\"Sample Slide Show\" -- GET https://httpbin.org/json
+```
+
+Machine-readable reports:
+
+```bash
+http test --report json --expect-status 200 -- GET https://httpbin.org/get
+```
+
+Exit codes:
+- `0` all assertions passed
+- `1` one or more assertions failed
+- `2` CLI/runtime error
+
+---
+
+## Secrets
+
+Store and retrieve local secrets:
+
+```bash
+http secrets set API_TOKEN super-secret-token
+http secrets list
+http secrets get API_TOKEN
+http secrets get API_TOKEN --reveal
+```
+
+Secrets are stored in `~/.config/zapreq/secrets.json`.
+
 ---
 
 ## AI assistant
@@ -287,9 +383,21 @@ Describe your request in plain English:
 http ai "POST to https://api.example.com/users with name Faizan and role admin"
 ```
 
-ZapReq prints the generated command before executing it so you can see exactly what
-it built. The assistant uses a structured JSON prompt — it never guesses; it constructs
-a concrete request from your description.
+ZapReq prints a generated command first. By default it does not send the request.
+
+```bash
+# Generate only (default)
+http ai "GET https://api.example.com/me with bearer auth"
+
+# Generate and execute
+http ai "GET https://api.example.com/me with bearer auth" --send
+
+# Save generated request
+http ai "POST login request to https://api.example.com/login" --save login
+
+# Show generation breakdown
+http ai "create users request" --explain
+```
 
 ---
 
@@ -388,8 +496,14 @@ are discovered from `plugins_dir` via `.toml` manifest files.
 # List all registered plugins
 http plugins list
 
+# Validate plugin manifests and executable paths
+http plugins validate
+
 # Install instructions for a community plugin
 http plugins install zapreq-plugin-aws
+
+# Run a plugin executable (if manifest defines executable)
+http plugins run my-plugin -- --help
 ```
 
 Manifest format (`~/.config/zapreq/plugins/my-plugin.toml`):
@@ -400,6 +514,7 @@ name        = "my-auth"
 version     = "1.0.0"
 description = "Custom HMAC authentication"
 auth_types  = ["hmac"]
+executable  = "./my-auth-plugin"
 ```
 
 See the [plugin authoring guide](https://github.com/MFAIZAN20/zapreq/wiki/plugins) for
@@ -418,6 +533,9 @@ how to build and distribute a zapreq plugin.
 | Syntax-highlighted output | ✅ | ✅ |
 | Environment profiles | ❌ | ✅ |
 | Request collections | ❌ | ✅ |
+| Interactive terminal workspace (`http tui`) | ❌ | ✅ |
+| API test assertions (`http test`) | ❌ | ✅ |
+| Local secrets store (`http secrets`) | ❌ | ✅ |
 | AI request assistant | ❌ | ✅ |
 | Response diffing | ❌ | ✅ |
 | Resume downloads | ❌ | ✅ |

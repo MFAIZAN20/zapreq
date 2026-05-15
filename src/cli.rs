@@ -25,9 +25,85 @@ pub enum StyleTheme {
 /// Plugin manager subcommands.
 #[derive(Clone, Debug, Subcommand)]
 pub enum PluginCommand {
-    Install { name: String },
-    Uninstall { name: String },
+    Install {
+        name: String,
+    },
+    Uninstall {
+        name: String,
+    },
     List,
+    Validate,
+    Run {
+        name: String,
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+}
+
+/// Environment profile commands.
+#[derive(Clone, Debug, Subcommand)]
+pub enum EnvCommand {
+    List,
+    Show { name: String },
+    Validate { name: String },
+}
+
+/// Secret management commands.
+#[derive(Clone, Debug, Subcommand)]
+pub enum SecretCommand {
+    Set {
+        key: String,
+        value: String,
+    },
+    Get {
+        key: String,
+        #[arg(long = "reveal")]
+        reveal: bool,
+    },
+    List,
+}
+
+/// Structured workspace/collection commands.
+#[derive(Clone, Debug, Subcommand)]
+pub enum CollectionsCommand {
+    List,
+    New {
+        name: String,
+    },
+    Import {
+        name: String,
+        path: String,
+    },
+    Export {
+        name: String,
+        path: String,
+        #[arg(long = "format", default_value = "zapreq")]
+        format: String,
+    },
+    Migrate {
+        #[arg(long = "workspace", default_value = "legacy")]
+        workspace: String,
+    },
+}
+
+/// Workspace request commands.
+#[derive(Clone, Debug, Subcommand)]
+pub enum RequestsCommand {
+    List {
+        workspace: String,
+    },
+    Run {
+        workspace: String,
+        request: String,
+        #[arg(long = "env-profile")]
+        env_profile: Option<String>,
+    },
+    Save {
+        workspace: String,
+        name: String,
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        request: Vec<String>,
+    },
 }
 
 /// CAUS-PLUGINMGMT-31:
@@ -54,7 +130,48 @@ pub enum Command {
     },
     Ai {
         prompt: String,
+        #[arg(long = "send")]
+        send: bool,
+        #[arg(long = "save")]
+        save: Option<String>,
+        #[arg(long = "explain")]
+        explain: bool,
+        #[arg(long = "env-profile")]
+        env_profile: Option<String>,
     },
+    Test {
+        #[arg(long = "expect-status")]
+        expect_status: Option<u16>,
+        #[arg(long = "expect-header")]
+        expect_header: Vec<String>,
+        #[arg(long = "expect-json")]
+        expect_json: Vec<String>,
+        #[arg(long = "expect-body-contains")]
+        expect_body_contains: Vec<String>,
+        #[arg(long = "max-time-ms")]
+        max_time_ms: Option<u64>,
+        #[arg(long = "report", default_value = "text")]
+        report: String,
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        request: Vec<String>,
+    },
+    Env {
+        #[command(subcommand)]
+        command: EnvCommand,
+    },
+    Collections {
+        #[command(subcommand)]
+        command: CollectionsCommand,
+    },
+    Requests {
+        #[command(subcommand)]
+        command: RequestsCommand,
+    },
+    Secrets {
+        #[command(subcommand)]
+        command: SecretCommand,
+    },
+    Tui,
     Diff {
         url_a: String,
         url_b: String,
@@ -103,6 +220,8 @@ pub struct CliArgs {
     pub env_profile: Option<String>,
     pub offline: bool,
     pub meta: bool,
+    pub summary: bool,
+    pub no_summary: bool,
     pub command: Option<Command>,
 }
 
@@ -225,6 +344,12 @@ pub struct CliArgsRaw {
     #[arg(long = "meta")]
     pub meta: bool,
 
+    #[arg(long = "summary")]
+    pub summary: bool,
+
+    #[arg(long = "no-summary", conflicts_with = "summary")]
+    pub no_summary: bool,
+
     #[arg(long = "help", action = clap::ArgAction::HelpLong)]
     pub help: Option<bool>,
 }
@@ -288,6 +413,8 @@ where
             env_profile: None,
             offline: false,
             meta: false,
+            summary: false,
+            no_summary: false,
             command: Some(cmd.command),
         });
     }
@@ -354,6 +481,8 @@ where
         env_profile: raw.env_profile,
         offline: raw.offline,
         meta: raw.meta,
+        summary: raw.summary,
+        no_summary: raw.no_summary,
         command: None,
     })
 }
@@ -384,7 +513,19 @@ fn is_subcommand_invocation(argv: &[std::ffi::OsString]) -> bool {
     };
     matches!(
         cmd,
-        "plugins" | "save" | "run" | "list" | "delete" | "ai" | "diff"
+        "plugins"
+            | "save"
+            | "run"
+            | "list"
+            | "delete"
+            | "ai"
+            | "test"
+            | "env"
+            | "collections"
+            | "requests"
+            | "secrets"
+            | "tui"
+            | "diff"
     )
 }
 

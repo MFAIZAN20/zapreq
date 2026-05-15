@@ -5,6 +5,7 @@ pub mod collections;
 pub mod config;
 pub mod diff;
 pub mod download;
+pub mod env_cmd;
 pub mod errors;
 pub mod format;
 pub mod items;
@@ -12,7 +13,10 @@ pub mod output;
 pub mod plugins;
 pub mod request;
 pub mod response;
+pub mod secrets;
 pub mod sessions;
+pub mod testing;
+pub mod tui;
 pub mod utils;
 
 pub use errors::ZapReqError;

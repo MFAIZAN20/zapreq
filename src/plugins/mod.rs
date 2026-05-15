@@ -12,6 +12,7 @@ pub struct PluginInfo {
     pub version: String,
     pub description: String,
     pub auth_types: Vec<String>,
+    pub executable: Option<String>,
 }
 
 /// Runtime plugin contract.
@@ -34,6 +35,7 @@ struct ManifestPlugin {
     description: String,
     #[serde(default)]
     auth_types: Vec<String>,
+    executable: Option<String>,
 }
 
 /// Lists built-in plugins and manifest-based plugins from config.plugins_dir.
@@ -121,6 +123,7 @@ fn parse_manifest(path: &std::path::Path) -> Option<PluginInfo> {
         version: manifest.plugin.version,
         description: manifest.plugin.description,
         auth_types: manifest.plugin.auth_types,
+        executable: manifest.plugin.executable,
     })
 }
 
@@ -131,18 +134,21 @@ fn builtin_plugins() -> Vec<PluginInfo> {
             version: "built-in".to_string(),
             description: "HTTP Basic Authentication".to_string(),
             auth_types: vec!["basic".to_string()],
+            executable: None,
         },
         PluginInfo {
             name: "bearer".to_string(),
             version: "built-in".to_string(),
             description: "Bearer Token Authentication".to_string(),
             auth_types: vec!["bearer".to_string()],
+            executable: None,
         },
         PluginInfo {
             name: "digest".to_string(),
             version: "built-in".to_string(),
             description: "HTTP Digest Authentication (RFC 7616)".to_string(),
             auth_types: vec!["digest".to_string()],
+            executable: None,
         },
     ]
 }
