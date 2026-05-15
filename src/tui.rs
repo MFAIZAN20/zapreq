@@ -29,6 +29,11 @@ use crate::request::{RequestEngine, RequestSpec};
 use crate::utils::{is_binary, normalize_url};
 
 const LEGACY_KEY: &str = "__legacy__";
+type TuiSources = (
+    Vec<String>,
+    HashMap<String, String>,
+    HashMap<String, Vec<TuiRequest>>,
+);
 
 #[derive(Clone, Debug)]
 struct TuiRequest {
@@ -212,15 +217,9 @@ pub fn run_advanced_tui(config: &Config) -> Result<()> {
     let state_result = save_tui_state(&app.to_state());
     let restore_result = restore_terminal(terminal);
 
-    if let Err(err) = loop_result {
-        return Err(err);
-    }
-    if let Err(err) = state_result {
-        return Err(err);
-    }
-    if let Err(err) = restore_result {
-        return Err(err);
-    }
+    loop_result?;
+    state_result?;
+    restore_result?;
     Ok(())
 }
 
@@ -273,11 +272,7 @@ fn run_event_loop(
     Ok(())
 }
 
-fn load_sources() -> Result<(
-    Vec<String>,
-    HashMap<String, String>,
-    HashMap<String, Vec<TuiRequest>>,
-)> {
+fn load_sources() -> Result<TuiSources> {
     let workspace_summaries = list_workspaces().context("failed to list workspaces")?;
     let mut order = Vec::new();
     let mut labels = HashMap::new();
@@ -483,11 +478,9 @@ fn handle_key_event(
 
     match key.code {
         KeyCode::Char('q') => return Ok(true),
-        KeyCode::Up => {
-            if app.request_index > 0 {
-                app.request_index -= 1;
-                app.scroll = 0;
-            }
+        KeyCode::Up if app.request_index > 0 => {
+            app.request_index -= 1;
+            app.scroll = 0;
         }
         KeyCode::Down => {
             let max = app.filtered_requests().len().saturating_sub(1);
@@ -496,21 +489,17 @@ fn handle_key_event(
                 app.scroll = 0;
             }
         }
-        KeyCode::Left => {
-            if app.workspace_index > 0 {
-                app.workspace_index -= 1;
-                app.request_index = 0;
-                app.scroll = 0;
-                app.status = format!("Switched workspace to '{}'", app.active_workspace_label());
-            }
+        KeyCode::Left if app.workspace_index > 0 => {
+            app.workspace_index -= 1;
+            app.request_index = 0;
+            app.scroll = 0;
+            app.status = format!("Switched workspace to '{}'", app.active_workspace_label());
         }
-        KeyCode::Right => {
-            if app.workspace_index + 1 < app.workspace_order.len() {
-                app.workspace_index += 1;
-                app.request_index = 0;
-                app.scroll = 0;
-                app.status = format!("Switched workspace to '{}'", app.active_workspace_label());
-            }
+        KeyCode::Right if app.workspace_index + 1 < app.workspace_order.len() => {
+            app.workspace_index += 1;
+            app.request_index = 0;
+            app.scroll = 0;
+            app.status = format!("Switched workspace to '{}'", app.active_workspace_label());
         }
         KeyCode::Enter | KeyCode::Char('r') => {
             let selected = app.selected_request();
@@ -556,12 +545,10 @@ fn handle_key_event(
             app.filter_mode = true;
             app.status = "Filter mode: type text and press Enter (Esc to cancel).".to_string();
         }
-        KeyCode::Char('e') => {
-            if !app.env_profiles.is_empty() {
-                app.env_index = (app.env_index + 1) % app.env_profiles.len();
-                let active = app.active_env_profile().unwrap_or("none");
-                app.status = format!("Active env profile: {active}");
-            }
+        KeyCode::Char('e') if !app.env_profiles.is_empty() => {
+            app.env_index = (app.env_index + 1) % app.env_profiles.len();
+            let active = app.active_env_profile().unwrap_or("none");
+            app.status = format!("Active env profile: {active}");
         }
         KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             app.filter.clear();

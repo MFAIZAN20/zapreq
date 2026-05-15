@@ -662,9 +662,9 @@ fn load_env_file(path: &str) -> Result<HashMap<String, String>> {
             continue;
         }
         let mut value = v.trim().to_string();
-        if value.starts_with('"') && value.ends_with('"') && value.len() >= 2 {
-            value = value[1..value.len() - 1].to_string();
-        } else if value.starts_with('\'') && value.ends_with('\'') && value.len() >= 2 {
+        let double_quoted = value.starts_with('"') && value.ends_with('"');
+        let single_quoted = value.starts_with('\'') && value.ends_with('\'');
+        if value.len() >= 2 && (double_quoted || single_quoted) {
             value = value[1..value.len() - 1].to_string();
         } else if let Some((head, _comment)) = value.split_once(" #") {
             value = head.trim().to_string();

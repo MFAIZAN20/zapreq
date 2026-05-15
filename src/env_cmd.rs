@@ -43,8 +43,9 @@ pub fn validate_profile(name: &str) -> Result<Vec<String>> {
 
     if let Some(base) = profile.base_url.as_deref() {
         let trimmed = base.trim();
-        if !trimmed.is_empty()
-            && !(trimmed.starts_with("http://") || trimmed.starts_with("https://"))
+        if !(trimmed.is_empty()
+            || trimmed.starts_with("http://")
+            || trimmed.starts_with("https://"))
         {
             issues.push(format!(
                 "base_url should start with http:// or https://, got {trimmed:?}"
