@@ -1,583 +1,600 @@
-# zapreq
+# ⚡️ zapreq
 
-> A fast, friendly HTTP client for the terminal — HTTPie reimagined in Rust.
+> **A blazing fast, developer-friendly HTTP client — HTTPie reimagined in Rust, featuring a TUI, a Tauri GUI, Local Regression Testing, and an AI Assistant.**
 
 [![Crates.io](https://img.shields.io/crates/v/zapreq.svg)](https://crates.io/crates/zapreq)
 [![CI](https://github.com/MFAIZAN20/zapreq/actions/workflows/ci.yml/badge.svg)](https://github.com/MFAIZAN20/zapreq/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
 [![Rust](https://img.shields.io/badge/rust-stable-orange.svg)](https://www.rust-lang.org)
+[![Downloads](https://img.shields.io/crates/d/zapreq.svg)](https://crates.io/crates/zapreq)
 
-`zapreq` installs an `http` binary. If you know HTTPie, you already know zapreq — same
-syntax, faster startup, lower memory, and a handful of features HTTPie never shipped.
-
----
-
-## Table of contents
-
-- [Why zapreq](#why-zapreq)
-- [Install](#install)
-- [Quick start](#quick-start)
-- [Request items](#request-items)
-- [Output control](#output-control)
-- [Authentication](#authentication)
-- [Sessions](#sessions)
-- [Environment profiles](#environment-profiles)
-- [Request collections](#request-collections)
-- [Terminal workspace](#terminal-workspace)
-- [API testing](#api-testing)
-- [Secrets](#secrets)
-- [AI assistant](#ai-assistant)
-- [Response diffing](#response-diffing)
-- [Download mode](#download-mode)
-- [Configuration](#configuration)
-- [Plugins](#plugins)
-- [Comparison with HTTPie](#comparison-with-httpie)
-- [Contributing](#contributing)
-- [License](#license)
+`zapreq` is a next-generation API client that installs as a single, lightweight binary. It ships with `http` as a compatibility alias. If you know HTTPie, you already know `zapreq` — it features the same clean syntax, but boasts sub-5ms startup times, minimal memory usage, and an ecosystem of local-first tools (TUI, Tauri GUI, Regression Suite, Security Scanner, AI Assistant) that Postman and HTTPie do not ship out of the box.
 
 ---
 
-## Why zapreq
+## 🗺️ Table of Contents
 
-- **~3 MB binary, ~5 ms startup.** HTTPie ships ~15 MB and takes ~200 ms. ZapReq is
-  compiled Rust — no interpreter, no import overhead.
-- **HTTPie-compatible syntax.** Every `key=value`, `key:=value`, `key==value` item works
-  exactly as you expect.
-- **Full auth coverage.** Basic, Bearer, and Digest (RFC 7616, MD5 + SHA-256) with an
-  automatic 401 retry cycle for Digest.
-- **Session persistence.** Cookies, headers, and auth are saved to
-  `~/.config/zapreq/sessions/` and restored on the next request.
-- **Environment profiles.** Switch between `dev`, `staging`, and `prod` with one flag.
-- **Request collections.** Save a request by name, replay it later — Postman-style,
-  entirely in the terminal.
-- **AI assistant.** Describe a request in plain English; zapreq generates a concrete
-  command and runs it only when you opt in.
-- **Response diffing.** Compare two endpoints side by side, key by key.
-- **Zero Python dependency.** One binary, no virtualenv, no pip.
+- [✨ Core Highlights](#-core-highlights)
+- [📦 Installation](#-installation)
+- [🚀 Quick Start](#-quick-start)
+- [🧭 Request Items Syntax](#-request-items-syntax)
+- [🎨 Output Customization](#-output-customization)
+- [🔐 Authentication Profiles](#-authentication-profiles)
+- [🔄 Sessions & Cookie Persistence](#-sessions--cookie-persistence)
+- [🌐 Environment Profiles](#-environment-profiles)
+- [📂 Hierarchical Collections & Drag-and-Drop](#-hierarchical-collections--drag-and-drop)
+- [🖥️ Tauri Desktop GUI](#-tauri-desktop-gui)
+- [📟 Terminal TUI](#-terminal-tui)
+- [🧪 API Testing & Regression Suites](#-api-testing--regression-suites)
+- [📊 Performance Benchmarking](#-performance-benchmarking)
+- [🛡️ Local Security Scanner](#-local-security-scanner)
+- [📝 Local Notes & Revision History](#-local-notes--revision-history)
+- [📖 API Documentation Generator](#-api-documentation-generator)
+- [🧠 AI Request Assistant](#-ai-request-assistant)
+- [⚖️ Response Diffing](#-response-diffing)
+- [📥 Resumeable Download Mode](#-resumeable-download-mode)
+- [⚙️ Configuration Reference](#-configuration-reference)
+- [🔌 Extension Plugins](#-extension-plugins)
+- [📊 zapreq vs. curl vs. HTTPie](#-zapreq-vs-curl-vs-httpie)
+- [🛠️ Contributing](#-contributing)
+- [📄 License](#-license)
+- [🏗️ System Architecture](#️-system-architecture)
 
 ---
 
-## Install
+## 🏗️ System Architecture
 
+The following diagram illustrates how the `zapreq` CLI, terminal TUI, and Tauri desktop GUI interface with the core request engine, security scanners, test runners, and local SQLite/JSON storage:
+
+```mermaid
+graph TD
+    %% Define Styles
+    classDef ui fill:#4f46e5,stroke:#312e81,color:#ffffff,stroke-width:2px;
+    classDef engine fill:#10b981,stroke:#065f46,color:#ffffff,stroke-width:2px;
+    classDef db fill:#f59e0b,stroke:#78350f,color:#ffffff,stroke-width:2px;
+    classDef ext fill:#6b7280,stroke:#374151,color:#ffffff,stroke-width:2px;
+
+    %% Nodes
+    subgraph UI ["User Interfaces (Rust/Tauri)"]
+        CLI["CLI Command Line"]:::ui
+        TUI["Terminal TUI (ratatui)"]:::ui
+        GUI["Tauri Desktop App (React/TS)"]:::ui
+    end
+
+    subgraph Core ["Core Request & Analysis Engine (Rust Lib)"]
+        ReqEngine["Request Engine (reqwest)"]:::engine
+        Tester["Test & Assertions Engine"]:::engine
+        Scanner["Security Scanner"]:::engine
+        Benchmarker["Performance Benchmarker"]:::engine
+        AIAssistant["AI Prompt Parser"]:::engine
+    end
+
+    subgraph Data ["Local Storage (Local-First)"]
+        Config["config.json & Envs"]:::db
+        Sessions["Session Cookie Jars"]:::db
+        SQLite["SQLite DB (Notes, Reports, History)"]:::db
+    end
+
+    subgraph Ext ["External Systems"]
+        TargetAPI["Target API Endpoint"]:::ext
+        AIService["AI API Endpoint"]:::ext
+        Schemas["Postman / OpenAPI Files"]:::ext
+    end
+
+    %% Relations
+    CLI --> ReqEngine
+    TUI --> ReqEngine
+    GUI <--> |Tauri IPC Commands| ReqEngine
+
+    ReqEngine --> |HTTP Calls| TargetAPI
+    ReqEngine <--> Sessions
+    
+    TUI & GUI & CLI <--> SQLite
+    Tester & Scanner & Benchmarker & AIAssistant --> ReqEngine
+    
+    AIAssistant --> |LLM Prompts| AIService
+    
+    Tester --> SQLite
+    Scanner --> SQLite
+    Benchmarker --> SQLite
+    
+    CLI & TUI & GUI <--> Config
+    
+    GUI <--> |Import/Export| Schemas
+```
+
+---
+
+## ✨ Core Highlights
+
+* **Single Native Binary (~3 MB):** Zero Python dependencies, virtual environments, or Node runtimes. 
+* **⚡️ Sub-5ms Startup Time:** Instantly fires requests. HTTPie takes ~200ms due to Python interpreter overhead.
+* **📂 Hierarchical Workspaces:** Organise requests into collapsible folder structures using `/` delimiters, with full interactive drag-and-drop support in the Tauri GUI.
+* **🧪 Local Test Automation:** Write API assertions (`--expect-status`, `--expect-json`) directly in the shell and run recursive test suites with a visual history dashboard.
+* **🛡️ Security First:** Local-first static and live scanning for sensitive headers, exposed credentials, missing HTTPS transport, and overly permissive APIs.
+* **🧠 AI-Powered Execution:** Generate requests and explain execution paths using natural language descriptions powered by LLMs.
+* **📟 Multi-modal:** Fluidly transition between raw **CLI commands**, a keyboard-driven terminal **TUI**, or a modern **Desktop GUI** sharing the same local database.
+
+---
+
+## 📦 Installation
+
+### Cargo (Rust Toolchain)
 ```bash
 cargo install zapreq
 ```
 
-Pre-built binaries for Linux, macOS (x86 + ARM), and Windows are attached to every
-[GitHub release](https://github.com/MFAIZAN20/zapreq/releases). Download and place
-the binary on your `PATH` if you do not have a Rust toolchain.
+### Binary Downloads
+Pre-built binaries for Linux, macOS (x86_64 + Apple Silicon), and Windows are attached to every [GitHub release](https://github.com/MFAIZAN20/zapreq/releases). Download the binary and place it in your system `PATH`.
 
-**Package managers**
+### Package Managers
 
 ```bash
 # Arch Linux (AUR)
 yay -S zapreq
 
-# macOS / Linux (Homebrew tap)
+# macOS or Linux (Homebrew Tap)
 brew tap MFAIZAN20/zapreq
 brew install zapreq
 ```
 
 ---
 
-## Quick start
+## 🚀 Quick Start
 
 ```bash
-# GET request
-http GET https://httpbin.org/get
+# 1. Simple GET request
+zapreq GET https://httpbin.org/get
 
-# POST with JSON body (inferred from data items)
-http POST https://httpbin.org/post name=faizan age:=22
+# 2. POST request with JSON payload (inferred from arguments)
+zapreq POST https://httpbin.org/post name="Faizan" age:=22 active:=true
 
-# Form-encoded body
-http --form POST https://httpbin.org/post field=value
+# 3. Form-encoded payload
+zapreq --form POST https://httpbin.org/post username=faizan status=active
 
-# Custom headers
-http GET https://httpbin.org/headers Accept:application/json X-Token:abc123
+# 4. Custom Request Headers & Query Parameters
+zapreq GET https://httpbin.org/get X-API-Token:secretKey page==2 limit==10
 
-# Query parameters
-http GET https://httpbin.org/get page==2 limit==10
+# 5. HTTP Digest Authentication (includes automatic 401 challenge retry)
+zapreq --auth-type digest --auth user:pass https://httpbin.org/digest-auth/auth/user/pass
 
-# Basic auth
-http --auth user:pass https://httpbin.org/basic-auth/user/pass
-
-# Bearer token
-http --auth-type bearer --auth "$TOKEN" https://api.example.com/me
-
-# Named session (saves cookies + auth for next time)
-http --session myapi POST https://api.example.com/login username=faizan password=secret
-http --session myapi GET  https://api.example.com/me
-
-# Download a file with a progress bar
-http --download https://example.com/archive.zip
-
-# Compare two API versions
-http diff https://api.example.com/v1/user/1 https://api.example.com/v2/user/1
+# 6. Save a request into a Collection Workspace
+zapreq requests save api-v1 get-user -- GET https://api.example.com/users/{USER_ID}
 ```
 
 ---
 
-## Request items
+## 🧭 Request Items Syntax
 
-Items are positional arguments after the URL. The operator between key and value
-determines what the item does.
+`zapreq` uses positional arguments after the URL to define query params, headers, and body payloads. The operator character determines the data type.
 
-| Operator | Type | Example |
-|---|---|---|
-| `key:value` | Request header | `Accept:application/json` |
-| `key=value` | String body field | `name=faizan` |
-| `key:=value` | Raw JSON body field | `active:=true` or `count:=42` |
-| `key==value` | Query string parameter | `page==2` |
-| `key@/path` | File upload (multipart) | `avatar@/tmp/photo.png` |
-| `key@/path;type=mime` | File upload with explicit MIME | `blob@/tmp/data.bin;type=application/octet-stream` |
-| `key=@/path` | String field read from file | `payload=@/tmp/body.txt` |
-| `key:=@/path` | JSON field read from file | `config:=@/tmp/opts.json` |
+| Operator | Syntax Type | Example | Compiled Output |
+|---|---|---|---|
+| `:` | Request Header | `X-Custom-Header:value` | `X-Custom-Header: value` |
+| `=` | String Body Field | `username=faizan` | `"username": "faizan"` |
+| `:=` | Raw JSON Field | `items:=["a", "b"]` | `"items": ["a", "b"]` |
+| `==` | Query Parameter | `search==rust` | `?search=rust` |
+| `@` | File Upload | `avatar@/tmp/avatar.png` | Multipart form file |
+| `@` with MIME | File with MIME | `data@/tmp/data.bin;type=application/octet-stream` | Explicit MIME file attachment |
+| `=@` | String Field from File | `pubkey=@~/.ssh/id_ed25519.pub` | File content read as string |
+| `:=@` | JSON Field from File | `config:=@/tmp/config.json` | File content parsed as JSON |
 
-Operator precedence (strict, evaluated left to right): `:=` and `:=@` → `==` → `:` → `=`
-and `=@` → `@`.
-
-**JSON body** is the default when data items are present. Pass `--form` for
-`application/x-www-form-urlencoded` or `--multipart` for `multipart/form-data`.
+> 💡 **Precedence Order:** Operator parsing evaluates from left to right with strict precedence: `:=` / `:=@` ➔ `==` ➔ `:` ➔ `=` / `=@` ➔ `@`.
 
 ---
 
-## Output control
+## 🎨 Output Customization
+
+Fine-tune output verbose levels, syntax themes, and color formatting.
 
 ```bash
-# Print only response headers
-http --print=h GET https://httpbin.org/get
+# Print response headers only (useful for status checks)
+zapreq --print=h GET https://httpbin.org/get
 
-# Print request + response headers (no body)
-http --print=Hh GET https://httpbin.org/get
+# Print request + response headers (no body payload)
+zapreq --print=Hh GET https://httpbin.org/get
 
-# Print everything
-http --verbose GET https://httpbin.org/get
+# Print full details (Request headers/body + Response headers/body)
+zapreq --verbose GET https://httpbin.org/get
 
-# Disable all formatting and colour (good for piping)
-http --pretty=none GET https://httpbin.org/get | jq .
+# Change color theme (supported: monokai, solarized, dracula, autumn)
+zapreq --style=dracula GET https://httpbin.org/json
 
-# Change syntax theme
-http --style=dracula GET https://httpbin.org/json
+# Format output summary line (Status code, latency, content length)
+zapreq --summary GET https://httpbin.org/get
 ```
 
-**`--print` flags** — combine freely:
+### `--print` Flags Matrix
+Combine these flags together (e.g. `--print=Hb`):
+* `H`: Request headers
+* `B`: Request body payload
+* `h`: Response headers
+* `b`: Response body payload
 
-| Flag | Meaning |
-|---|---|
-| `H` | Request headers |
-| `B` | Request body |
-| `h` | Response headers |
-| `b` | Response body |
+---
 
-Default is `hb` (response headers + body). `--verbose` is shorthand for `HBhb`.
+## 🔐 Authentication Profiles
 
-**`--pretty` modes:** `all` (default when TTY), `colors`, `format`, `none`.
-
-**`--style` themes:** `monokai` (default), `solarized`, `dracula`, `autumn`.
-
-**Quick summary line**
+`zapreq` provides comprehensive authentication protocols. Passed credentials are automatically masked as `****` in `--verbose` outputs.
 
 ```bash
-# Append compact status/time/size summary
-http --summary GET https://httpbin.org/get
+# HTTP Basic Auth (default type)
+zapreq --auth admin:super_secret https://api.example.com/me
+
+# OAuth2 / Bearer Token
+zapreq --auth-type bearer --auth "eyJhbGciOi..." https://api.example.com/me
+
+# HTTP Digest Auth (RFC 7616 - supports MD5 & SHA-256 with handshake sequence)
+zapreq --auth-type digest --auth admin:password https://api.example.com/protected
 ```
 
 ---
 
-## Authentication
+## 🔄 Sessions & Cookie Persistence
+
+Sessions serialize cookie jars, headers, and authentication parameters locally, allowing you to persist API state between independent CLI invocations. Sessions are saved in `~/.config/zapreq/sessions/{hostname}/{session_name}.json`.
 
 ```bash
-# HTTP Basic
-http --auth user:pass https://api.example.com/resource
+# Authenticate and initialize a session named 'dev-user'
+zapreq --session dev-user POST https://api.example.com/login username=faizan password=secret
 
-# Bearer token
-http --auth-type bearer --auth "$TOKEN" https://api.example.com/resource
+# Subsequent requests automatically load and write back updated cookie updates
+zapreq --session dev-user GET https://api.example.com/dashboard
 
-# HTTP Digest (RFC 7616 — MD5 and SHA-256 supported, automatic 401 retry)
-http --auth-type digest --auth user:pass https://api.example.com/resource
+# Load session in read-only mode (prevents updating the cookie jar on response)
+zapreq --session-read-only dev-user GET https://api.example.com/analytics
 ```
-
-The `--auth-type` flag defaults to `basic`. Credentials passed via `--auth` are masked
-(`user:****`) in `--verbose` output.
 
 ---
 
-## Sessions
+## 🌐 Environment Profiles
 
-Named sessions persist headers, cookies, and auth credentials between requests. Session
-files live in `~/.config/zapreq/sessions/{hostname}/{name}.json`.
+Easily manage variables across environmental configurations (`dev`, `staging`, `prod`). Profiles are JSON files saved in `~/.config/zapreq/envs/{profile_name}.json`.
 
-```bash
-# Log in — session is created and cookies are saved
-http --session prod POST https://api.example.com/login username=faizan password=secret
-
-# Subsequent requests reuse the saved session
-http --session prod GET https://api.example.com/me
-http --session prod GET https://api.example.com/orders
-
-# Load a session but do not update it after the response
-http --session-read-only prod GET https://api.example.com/me
-```
-
-Session file format:
-
+### Example Profile File (`prod.json`)
 ```json
 {
-  "headers":  { "X-Client": "zapreq" },
-  "auth":     { "type": "basic", "username": "faizan", "password": "secret" },
-  "cookies":  [{ "name": "sid", "value": "abc", "domain": "api.example.com", "path": "/" }],
-  "meta":     { "created": "2026-02-01T10:00:00Z", "last_used": "2026-05-01T14:22:00Z" }
+  "base_url": "https://api.production.internal",
+  "headers": {
+    "X-Client-Version": "4.2"
+  },
+  "variables": {
+    "USER_ID": "893",
+    "ROLE": "admin"
+  }
 }
 ```
 
----
-
-## Environment profiles
-
-Profiles let you switch base URL, headers, and variable values with a single flag.
-Profile files live in `~/.config/zapreq/envs/{name}.json`.
-
-```json
-{
-  "base_url":  "https://api.example.com",
-  "headers":   { "X-API-Version": "2" },
-  "variables": { "USER_ID": "42", "TOKEN": "prod-secret" }
-}
-```
-
+### CLI Substitution
+Tokens matching `{KEY}` in the URL or request parameters are replaced dynamically:
 ```bash
-# Use a named profile
-http --env-profile prod GET /users/{USER_ID}
-
-# Combine with a collection
-http run get-user --env-profile staging
-```
-
-Variable tokens `{KEY}` are substituted in the URL and in all request item values before
-the request is built.
-
----
-
-## Request collections
-
-Collections let you save a request by name and replay it later, optionally with a
-different environment profile.
-
-```bash
-# Save a request
-http save login -- POST https://api.example.com/login username=faizan password={PASSWORD}
-
-# List saved requests
-http list
-
-# Run a saved request
-http run login
-
-# Run with a profile (profile variables fill {PASSWORD})
-http run login --env-profile prod
-
-# Delete a saved request
-http delete login
-```
-
-Collection files live in `~/.config/zapreq/collections/{alias}.json`.
-
-Structured workspaces (v2):
-
-```bash
-# Create/list workspaces
-http collections new api
-http collections list
-
-# Save/list/run workspace requests
-http requests save api get-users -- GET https://api.example.com/users
-http requests list api
-http requests run api get-users
-
-# Migrate legacy aliases from ~/.config/zapreq/collections/*.json
-http collections migrate --workspace legacy
-```
-
-Import/export:
-
-```bash
-http collections export api ./api-workspace.json --format zapreq
-http collections export api ./api-postman.json --format postman
-http collections export api ./api-openapi.json --format openapi
-http collections import api2 ./api-workspace.json
+zapreq --env-profile prod GET /users/{USER_ID}/permissions role={ROLE}
 ```
 
 ---
 
-## Terminal workspace
+## 📂 Hierarchical Collections & Drag-and-Drop
 
-Open an interactive terminal workspace for saved requests:
+Organize saved API requests in namespaces and folder hierarchies. Workspaces store requests under named aliases in a local database.
 
+### Command Line Workspace Actions
 ```bash
-http tui
+# Create a new workspace
+zapreq collections new payments
+
+# Save a request under a hierarchical folder segment path (using `/` delimiters)
+zapreq requests save payments "Billing / Invoices / Get Invoice" -- GET https://api.example.com/invoices/{ID}
+
+# List all requests in a workspace
+zapreq requests list payments
+
+# Run a saved request (replaces tokens dynamically)
+zapreq requests run payments "Billing / Invoices / Get Invoice" ID=56
 ```
 
-The workspace provides:
-- multi-pane layout (workspaces, requests, response viewer)
-- keyboard navigation (`←/→`, `↑/↓`)
-- response tabs (`Tab`) for body, headers, meta, and raw
-- request filtering (`/` to type filter, `Enter` to apply, `Ctrl+u` to clear)
-- inline execution (`Enter`) with response rendered in-place
-- environment profile switching (`e`)
+### Drag-and-Drop Organizing
+In the Tauri Desktop GUI, folders and request nodes are displayed in a clean directory tree. You can drag and drop request items to relocate them between folders or drag them to the root panel zone. Moving requests automatically updates their database path names. Empty folders are tracked and preserved on screen when child elements are moved or deleted.
 
 ---
 
-## API testing
+## 🖥️ Tauri Desktop GUI
 
-Assert API responses directly from the terminal:
-
-```bash
-http test --expect-status 200 --expect-header content-type~json -- GET https://httpbin.org/json
-```
-
-JSON assertions use `path=value` syntax:
+Open the fully integrated desktop interface by running `zapreq` without subcommands or calling `gui` explicitly:
 
 ```bash
-http test --expect-json slideshow.title=\"Sample Slide Show\" -- GET https://httpbin.org/json
+zapreq
+# or
+zapreq gui
 ```
 
-Machine-readable reports:
-
-```bash
-http test --report json --expect-status 200 -- GET https://httpbin.org/get
-```
-
-Exit codes:
-- `0` all assertions passed
-- `1` one or more assertions failed
-- `2` CLI/runtime error
+### GUI Key Capabilities:
+* **Multi-pane Layout:** Workspace directory tree (left), Request Editor & tabbed controls (center), Response Viewer (right).
+* **Workspace Management:** Interactive creation, migration, import, and export of workspace definitions (Zapreq, Postman, and OpenAPI schemas supported).
+* **Tabs-based Request Builders:** Dedicated visual sections for query parameters, custom headers, body fields (JSON, URL Form, Multipart, Raw File), script editors, and authorization.
+* **Regression Suites Tab:** Run automated test suites sequentially with visual progress bars and live status feedback.
+* **Interactive Summary Dashboard:** A homepage view featuring an animated SVG Donut Chart showing test pass/fail distributions and a scrollable feed of recent request runs with latency metrics.
 
 ---
 
-## Secrets
+## 📟 Terminal TUI
 
-Store and retrieve local secrets:
+For keyboard-first developers, `zapreq` includes a full-featured terminal workspace TUI built in Rust:
 
 ```bash
-http secrets set API_TOKEN super-secret-token
-http secrets list
-http secrets get API_TOKEN
-http secrets get API_TOKEN --reveal
+zapreq tui
 ```
 
-Secrets are stored in `~/.config/zapreq/secrets.json`.
+It supports workspace switching, interactive request running, headers/body tab toggle, and environment variable expansions using native terminal widgets.
 
 ---
 
-## AI assistant
+## 🧪 API Testing & Regression Suites
 
-Set an OpenAI-compatible API key:
+Perform automated assertions on API responses. Test suites and execution history are stored in a local SQLite file.
+
+### CLI Ad-hoc Assertions
+```bash
+# Assert HTTP status and header patterns
+zapreq test --expect-status 200 --expect-header content-type~json -- GET https://httpbin.org/json
+
+# Assert nested JSON keys using dot-notation syntax
+zapreq test --expect-json slideshow.slides[0].title="Wake up!" -- GET https://httpbin.org/json
+```
+
+### Local Regression Suites
+Create test suites and cases to execute multiple requests in sequence.
+
+```bash
+# Add a regression test case linking to a saved workspace request
+zapreq regression add smoke-tests check-auth --workspace payments --request "Billing / Get Token" --expect-status 200
+
+# List cases in a suite
+zapreq regression list --suite smoke-tests
+
+# Run a suite
+zapreq regression run smoke-tests
+
+# Inspect test history for a specific case
+zapreq regression history smoke-tests check-auth
+```
+
+---
+
+## 📊 Performance Benchmarking
+
+Benchmark endpoint response times and latencies locally.
+
+```bash
+# Run a request 100 times in sequence to measure latency metrics
+zapreq perf benchmark --alias get-users --iterations 100
+
+# Benchmark a workspace over a specific duration (runs continuously for 30s)
+zapreq perf benchmark --workspace payments --duration-secs 30
+```
+
+### Benchmark Metrics Tracked:
+* **Iterations & Success Rate:** Number of executions, HTTP 2xx vs. 4xx/5xx status rates, and network errors.
+* **Latency Distribution:** $min$, $p50$ (median), $p95$ (tail latency), $p99$, and $max$ execution times in milliseconds.
+* **Payload Size Analysis:** Total headers and body size processed.
+
+---
+
+## 🛡️ Local Security Scanner
+
+Scan saved requests, imported schemas, or live endpoints to check for security vulnerabilities.
+
+```bash
+# Scan a specific saved command alias
+zapreq security scan --alias login-api
+
+# Scan an entire workspace for vulnerabilities with a severity filter
+zapreq security scan --workspace staging --severity high
+
+# Perform a live active scan (executes safe GET/HEAD requests to check live response headers)
+zapreq security scan --alias fetch-profile --live
+```
+
+### Issues Scanned & Flagged:
+* **HTTPS Transport:** Flag requests communicating over unencrypted `http://`.
+* **Credential Exposure:** Detect secrets, API keys, private keys, or passwords saved inside request text fields.
+* **Sensitive Query Parameters:** Warn against sending tokens or credentials in the URL query string.
+* **Missing Security Headers:** Detect absence of `Content-Security-Policy`, `X-Content-Type-Options`, `Strict-Transport-Security`, etc., during live checks.
+* **Excessive Data Exposure:** Analyzes live payloads for potential over-fetching of sensitive user metadata.
+
+---
+
+## 📝 Local Notes & Revision History
+
+Document your endpoints directly inside `zapreq` with local notes linked to aliases, workspaces, or requests. Notes keep a local version history in SQLite.
+
+```bash
+# Add a note with tags
+zapreq notes add --alias get-users --title "Authentication Required" --tag security "Requires a valid JWT token. Token expires every 2 hours."
+
+# List and search notes
+zapreq notes list --query JWT
+
+# View note edit revisions
+zapreq notes history 1
+```
+
+---
+
+## 📖 API Documentation Generator
+
+Generate documentation files locally from workspace definitions.
+
+```bash
+# Generate clean Markdown documentation
+zapreq docs generate --workspace payments --format markdown --output ./docs.md
+
+# Generate static HTML API documentation
+zapreq docs generate --workspace payments --format html --output ./dist/docs.html
+
+# Export workspace schema as an OpenAPI 3.0 specification file
+zapreq docs generate --workspace payments --format openapi --output ./openapi-spec.json
+```
+
+---
+
+## 🧠 AI Request Assistant
+
+Translate plain English prompts into runnable HTTP commands using LLMs. Provide your OpenAI-compatible endpoint key:
 
 ```bash
 export ZAPREQ_AI_KEY=sk-...
 ```
 
-Describe your request in plain English:
-
 ```bash
-http ai "POST to https://api.example.com/users with name Faizan and role admin"
-```
+# Describe a request in natural language (defaults to dry-run verification mode)
+zapreq ai "GET https://api.github.com/repos/MFAIZAN20/zapreq with User-Agent header"
 
-ZapReq prints a generated command first. By default it does not send the request.
+# Generate and immediately send the request
+zapreq ai "POST request to https://httpbin.org/post with username Faizan" --send
 
-```bash
-# Generate only (default)
-http ai "GET https://api.example.com/me with bearer auth"
-
-# Generate and execute
-http ai "GET https://api.example.com/me with bearer auth" --send
-
-# Save generated request
-http ai "POST login request to https://api.example.com/login" --save login
-
-# Show generation breakdown
-http ai "create users request" --explain
+# Explain how the generated command was built
+zapreq ai "GET users limit 5" --explain
 ```
 
 ---
 
-## Response diffing
+## ⚖️ Response Diffing
 
-Compare two API endpoints key by key. ZapReq flattens both JSON responses into
-dot-notation paths and shows what changed.
-
-```bash
-http diff https://api.example.com/v1/user/42 https://api.example.com/v2/user/42
-```
-
-Output:
-
-```
-A: GET https://api.example.com/v1/user/42  →  200 OK
-B: GET https://api.example.com/v2/user/42  →  200 OK
-
-  user.id          42
-  user.name        "faizan"
-- user.role        "admin"          (only in A)
-+ user.role        "viewer"         (only in B)
-~ user.updated_at  "2025-01-01" → "2026-05-01"
-```
-
-Green lines are additions, red are removals, yellow are value changes.
-
----
-
-## Download mode
+Flatten two JSON response payloads and compare them side by side. Highlights differences in keys, structure types, and values.
 
 ```bash
-# Download to current directory (filename from Content-Disposition or URL)
-http --download https://example.com/archive.zip
-
-# Save to a specific path
-http --download --output ~/Downloads/archive.zip https://example.com/archive.zip
-
-# Resume a partial download
-http --download --continue --output archive.zip https://example.com/archive.zip
+zapreq diff https://api.example.com/v1/users/1 https://api.example.com/v2/users/1
 ```
 
-A progress bar is shown during the download:
+### Example Visual Diff Output
+```diff
+A: GET https://api.example.com/v1/users/1  →  200 OK
+B: GET https://api.example.com/v2/users/1  →  200 OK
 
-```
-[████████████░░░░░░░░] 4.2 MB / 10.0 MB  ·  1.2 MB/s  ·  ETA 5s
-✔ Downloaded: archive.zip  (10.0 MB in 8.3s  ·  avg 1.2 MB/s)
+   id          1
+   name        "Faizan"
+-  role        "admin"            (only in A)
++  privilege   "super_admin"      (only in B)
+~  updated_at  "2026-01-01"  ➔  "2026-06-18"
 ```
 
 ---
 
-## Configuration
+## 📥 Resumeable Download Mode
 
-Config file: `~/.config/zapreq/config.json`
+Download large files from the command line with standard visual progress indicators.
+
+```bash
+# Download file, saving to current directory
+zapreq --download https://example.com/large-bundle.iso
+
+# Continue/resume a partial download
+zapreq --download --continue --output bundle.iso https://example.com/large-bundle.iso
+```
+
+---
+
+## ⚙️ Configuration Reference
+
+Configuration parameters are stored in `~/.config/zapreq/config.json`.
 
 ```json
 {
-  "default_options": ["--style=monokai"],
-  "default_scheme":  "https",
-  "plugins_dir":     "~/.config/zapreq/plugins",
-  "output_theme":    "monokai",
-  "pretty":          "all",
-  "verify":          true
+  "default_options": ["--style=dracula"],
+  "default_scheme": "https",
+  "plugins_dir": "~/.config/zapreq/plugins",
+  "output_theme": "dracula",
+  "pretty": "all",
+  "verify": true
 }
 ```
 
-| Key | Type | Default | Description |
+| Config Parameter | Value Type | Default Value | Description |
 |---|---|---|---|
-| `default_options` | `string[]` | `[]` | Flags prepended before every invocation |
-| `default_scheme` | `string` | `https` | Scheme used when URL has no scheme |
-| `plugins_dir` | `string` | `~/.config/zapreq/plugins` | Directory scanned for plugin manifests |
-| `output_theme` | `string` | `monokai` | Default syntax theme |
-| `pretty` | `string` | `all` | Default pretty mode |
-| `verify` | `bool` | `true` | TLS certificate verification |
-
-Precedence order (highest to lowest):
-
-```
-Explicit CLI flags
-  ↓
-ZAPREQ_DEFAULT_OPTIONS environment variable
-  ↓
-config.json default_options
-  ↓
-Built-in defaults
-```
+| `default_options` | `string[]` | `[]` | CLI flags prepended before every command execution |
+| `default_scheme` | `string` | `"https"` | HTTP scheme assumed when URL lacks scheme prefix |
+| `plugins_dir` | `string` | `"~/.config/zapreq/plugins"` | Path scanned for TOML plugin definitions |
+| `output_theme` | `string` | `"monokai"` | Syntax highlighting style theme |
+| `pretty` | `string` | `"all"` | Formatting mode (`all`, `colors`, `format`, `none`) |
+| `verify` | `boolean` | `true` | Enable/disable TLS certificate verification checks |
 
 ---
 
-## Plugins
+## 🔌 Extension Plugins
 
-Built-in plugins (`basic`, `bearer`, `digest`) are always available. Third-party plugins
-are discovered from `plugins_dir` via `.toml` manifest files.
+`zapreq` discovers external plugins via TOML manifests located in `plugins_dir`.
 
-```bash
-# List all registered plugins
-http plugins list
-
-# Validate plugin manifests and executable paths
-http plugins validate
-
-# Install instructions for a community plugin
-http plugins install zapreq-plugin-aws
-
-# Run a plugin executable (if manifest defines executable)
-http plugins run my-plugin -- --help
-```
-
-Manifest format (`~/.config/zapreq/plugins/my-plugin.toml`):
-
+### Example Plugin Manifest (`aws-hmac.toml`)
 ```toml
 [plugin]
-name        = "my-auth"
-version     = "1.0.0"
-description = "Custom HMAC authentication"
-auth_types  = ["hmac"]
-executable  = "./my-auth-plugin"
+name        = "aws-hmac"
+version     = "1.2.0"
+description = "AWS Signature Version 4 Signing"
+auth_types  = ["aws"]
+executable  = "./aws-hmac-plugin"
 ```
 
-See the [plugin authoring guide](https://github.com/MFAIZAN20/zapreq/wiki/plugins) for
-how to build and distribute a zapreq plugin.
-
----
-
-## Comparison with HTTPie
-
-| Feature | HTTPie | zapreq |
-|---|---|---|
-| JSON / form / multipart | ✅ | ✅ |
-| Sessions | ✅ | ✅ |
-| Basic + Bearer auth | ✅ | ✅ |
-| Digest auth (RFC 7616) | ✅ | ✅ |
-| Syntax-highlighted output | ✅ | ✅ |
-| Environment profiles | ❌ | ✅ |
-| Request collections | ❌ | ✅ |
-| Interactive terminal workspace (`http tui`) | ❌ | ✅ |
-| API test assertions (`http test`) | ❌ | ✅ |
-| Local secrets store (`http secrets`) | ❌ | ✅ |
-| AI request assistant | ❌ | ✅ |
-| Response diffing | ❌ | ✅ |
-| Resume downloads | ❌ | ✅ |
-| Native binary (no Python) | ❌ | ✅ |
-| Binary size | ~15 MB | ~3 MB |
-| Startup time | ~200 ms | ~5 ms |
-
----
-
-## Contributing
-
+### Plugin CLI Commands
 ```bash
-# Clone
-git clone https://github.com/MFAIZAN20/zapreq
-cd zapreq
+# List all registered plugins
+zapreq plugins list
 
-# Run tests
-cargo test --all
+# Verify plugin manifest configuration and permissions
+zapreq plugins validate
 
-# Lint
-cargo clippy --all-targets --all-features -- -D warnings
-
-# Format
-cargo fmt --all
-
-# Release build
-cargo build --release
+# Run a plugin binary manually
+zapreq plugins run aws-hmac -- --help
 ```
-
-All pull requests must pass the CI matrix (Ubuntu, macOS, Windows × stable, beta) before
-merge. Please open an issue before starting work on a large feature.
 
 ---
 
-## License
+## 📊 zapreq vs. curl vs. HTTPie
+
+| Capability | `curl` | HTTPie | `zapreq` |
+|---|---|---|---|
+| **Syntax Style** | Verbose / Low-level | Clean / Developer-focused | Clean / Developer-focused |
+| **Startup Overhead** | Minimal (< 3ms) | Slow (~200ms) | **Minimal (< 5ms)** |
+| **Dependencies** | None (C library) | Python Runtime (~15MB) | **None (Self-contained binary)** |
+| **Named Sessions** | ❌ | ✅ | **✅** |
+| **Tauri Desktop GUI** | ❌ | ❌ | **✅ (`zapreq gui`)** |
+| **Terminal TUI Interface** | ❌ | ❌ | **✅ (`zapreq tui`)** |
+| **Regression Testing** | ❌ | ❌ | **✅ (`zapreq test` / `regression`)** |
+| **Performance Benchmarks** | ❌ | ❌ | **✅ (`zapreq perf`)** |
+| **Local SQLite DB** | ❌ | ❌ | **✅ (Reports, Notes, History)** |
+| **AI Assistant** | ❌ | ❌ | **✅ (`zapreq ai`)** |
+| **Response Diffing** | ❌ | ❌ | **✅ (`zapreq diff`)** |
+
+---
+
+## 🛠️ Contributing
+
+1. Clone the repository:
+   ```bash
+   git clone https://github.com/MFAIZAN20/zapreq.git
+   cd zapreq
+   ```
+2. Run unit and integration tests:
+   ```bash
+   cargo test --all
+   ```
+3. Run code formatting and lint checkers:
+   ```bash
+   cargo fmt --all
+   cargo clippy --all-targets --all-features -- -D warnings
+   ```
+4. Build release binaries:
+   ```bash
+   cargo build --release
+   ```
+
+---
+
+## 📄 License
 
 Licensed under either of the following, at your option:
+* **MIT License** ([LICENSE-MIT](LICENSE-MIT))
+* **Apache License, Version 2.0** ([LICENSE-APACHE](LICENSE-APACHE))
 
-- [MIT License](LICENSE-MIT)
-- [Apache License, Version 2.0](LICENSE-APACHE)
+Standard Rust ecosystem dual licensing applies.
 
-This is the standard dual license used across the Rust ecosystem (Rust itself, Cargo,
-tokio, serde, clap, reqwest). You may choose whichever license suits your project.
-
-Copyright © 2026 Muhammad Faizan
+Copyright © 2026 Muhammad Faizan. All rights reserved.
