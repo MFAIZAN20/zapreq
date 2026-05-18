@@ -1,5 +1,5 @@
 use anyhow::{anyhow, Result};
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 
 /// CAUS-CLI-21:
 /// Pretty output mode options.
@@ -19,6 +19,33 @@ pub enum StyleTheme {
     Solarized,
     Dracula,
     Autumn,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+pub enum SeverityLevel {
+    Low,
+    Medium,
+    High,
+    Critical,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+pub enum DocFormat {
+    Markdown,
+    Openapi,
+    Html,
+}
+
+#[derive(Clone, Debug, Args, Default)]
+pub struct SourceSelector {
+    #[arg(long = "alias")]
+    pub alias: Option<String>,
+    #[arg(long = "workspace")]
+    pub workspace: Option<String>,
+    #[arg(long = "request")]
+    pub request: Option<String>,
+    #[arg(long = "file")]
+    pub file: Option<String>,
 }
 
 /// CAUS-PLUGINMGMT-31, CAUS-PLUGINMGMT-35:
@@ -106,6 +133,107 @@ pub enum RequestsCommand {
     },
 }
 
+#[derive(Clone, Debug, Subcommand)]
+pub enum SecurityCommand {
+    Scan {
+        #[command(flatten)]
+        source: SourceSelector,
+        #[arg(long = "severity", default_value = "low")]
+        severity: SeverityLevel,
+        #[arg(long = "live")]
+        live: bool,
+    },
+}
+
+#[derive(Clone, Debug, Subcommand)]
+pub enum DocsCommand {
+    Generate {
+        #[command(flatten)]
+        source: SourceSelector,
+        #[arg(long = "format", default_value = "markdown")]
+        format: DocFormat,
+        #[arg(long = "output")]
+        output: Option<String>,
+    },
+}
+
+#[derive(Clone, Debug, Subcommand)]
+pub enum RegressionCommand {
+    Add {
+        suite: String,
+        name: String,
+        #[command(flatten)]
+        source: SourceSelector,
+        #[arg(long = "expect-status")]
+        expect_status: Option<u16>,
+        #[arg(long = "expect-header")]
+        expect_header: Vec<String>,
+        #[arg(long = "expect-json")]
+        expect_json: Vec<String>,
+        #[arg(long = "expect-body-contains")]
+        expect_body_contains: Vec<String>,
+        #[arg(long = "max-time-ms")]
+        max_time_ms: Option<u64>,
+    },
+    List {
+        #[arg(long = "suite")]
+        suite: Option<String>,
+    },
+    Run {
+        suite: String,
+    },
+    Delete {
+        suite: String,
+        name: String,
+    },
+    History {
+        suite: String,
+        name: String,
+    },
+}
+
+#[derive(Clone, Debug, Subcommand)]
+pub enum PerfCommand {
+    Benchmark {
+        #[command(flatten)]
+        source: SourceSelector,
+        #[arg(long = "iterations", default_value_t = 5)]
+        iterations: u32,
+        #[arg(long = "duration-secs")]
+        duration_secs: Option<u64>,
+    },
+}
+
+#[derive(Clone, Debug, Subcommand)]
+pub enum NotesCommand {
+    Add {
+        #[command(flatten)]
+        source: SourceSelector,
+        #[arg(long = "title")]
+        title: Option<String>,
+        #[arg(long = "tag")]
+        tags: Vec<String>,
+        body: String,
+    },
+    Update {
+        id: i64,
+        #[arg(long = "title")]
+        title: Option<String>,
+        #[arg(long = "tag")]
+        tags: Vec<String>,
+        body: String,
+    },
+    List {
+        #[command(flatten)]
+        source: SourceSelector,
+        #[arg(long = "query")]
+        query: Option<String>,
+    },
+    History {
+        id: i64,
+    },
+}
+
 /// CAUS-PLUGINMGMT-31:
 /// Top-level CLI subcommands.
 #[derive(Clone, Debug, Subcommand)]
@@ -167,10 +295,32 @@ pub enum Command {
         #[command(subcommand)]
         command: RequestsCommand,
     },
+    Security {
+        #[command(subcommand)]
+        command: SecurityCommand,
+    },
+    Docs {
+        #[command(subcommand)]
+        command: DocsCommand,
+    },
+    Regression {
+        #[command(subcommand)]
+        command: RegressionCommand,
+    },
+    Perf {
+        #[command(subcommand)]
+        command: PerfCommand,
+    },
+    Notes {
+        #[command(subcommand)]
+        command: NotesCommand,
+    },
     Secrets {
         #[command(subcommand)]
         command: SecretCommand,
     },
+    #[command(alias = "ui")]
+    Gui,
     Tui,
     Diff {
         url_a: String,
@@ -231,7 +381,7 @@ pub type Cli = CliArgs;
 /// CAUS-CLI-21:
 /// Raw parser struct used to support optional METHOD positional input.
 #[derive(Debug, Parser)]
-#[command(name = "http")]
+#[command(name = "zapreq")]
 #[command(disable_help_subcommand = true)]
 #[command(disable_help_flag = true)]
 #[command(args_override_self = true)]
@@ -355,9 +505,8 @@ pub struct CliArgsRaw {
 }
 
 #[derive(Debug, Parser)]
-#[command(name = "http")]
+#[command(name = "zapreq")]
 #[command(disable_help_subcommand = true)]
-#[command(disable_help_flag = true)]
 #[command(args_override_self = true)]
 struct CommandOnly {
     #[command(subcommand)]
@@ -374,8 +523,17 @@ where
     let argv_vec: Vec<std::ffi::OsString> = argv.into_iter().map(Into::into).collect();
 
     if is_subcommand_invocation(&argv_vec) {
-        let cmd =
-            CommandOnly::try_parse_from(argv_vec).map_err(|e| anyhow!("CLI parse failed: {e}"))?;
+        let cmd = match CommandOnly::try_parse_from(argv_vec) {
+            Ok(parsed) => parsed,
+            Err(e) => {
+                if e.kind() == clap::error::ErrorKind::DisplayHelp
+                    || e.kind() == clap::error::ErrorKind::DisplayVersion
+                {
+                    e.exit();
+                }
+                return Err(anyhow!("CLI parse failed: {e}"));
+            }
+        };
         return Ok(CliArgs {
             method: "GET".to_string(),
             url: String::new(),
@@ -419,7 +577,17 @@ where
         });
     }
 
-    let raw = CliArgsRaw::try_parse_from(argv_vec).map_err(|e| anyhow!("CLI parse failed: {e}"))?;
+    let raw = match CliArgsRaw::try_parse_from(argv_vec) {
+        Ok(parsed) => parsed,
+        Err(e) => {
+            if e.kind() == clap::error::ErrorKind::DisplayHelp
+                || e.kind() == clap::error::ErrorKind::DisplayVersion
+            {
+                e.exit();
+            }
+            return Err(anyhow!("CLI parse failed: {e}"));
+        }
+    };
 
     let first = raw
         .method_or_url
@@ -511,6 +679,17 @@ fn is_subcommand_invocation(argv: &[std::ffi::OsString]) -> bool {
     let Some(cmd) = argv.get(1).and_then(|s| s.to_str()) else {
         return false;
     };
+    is_known_subcommand_name(cmd)
+}
+
+fn looks_like_method(value: &str) -> bool {
+    matches!(
+        value.to_ascii_uppercase().as_str(),
+        "GET" | "POST" | "PUT" | "PATCH" | "DELETE" | "HEAD" | "OPTIONS"
+    )
+}
+
+pub fn is_known_subcommand_name(cmd: &str) -> bool {
     matches!(
         cmd,
         "plugins"
@@ -523,15 +702,39 @@ fn is_subcommand_invocation(argv: &[std::ffi::OsString]) -> bool {
             | "env"
             | "collections"
             | "requests"
+            | "security"
+            | "docs"
+            | "regression"
+            | "perf"
+            | "notes"
             | "secrets"
+            | "gui"
+            | "ui"
             | "tui"
             | "diff"
     )
 }
 
-fn looks_like_method(value: &str) -> bool {
-    matches!(
-        value.to_ascii_uppercase().as_str(),
-        "GET" | "POST" | "PUT" | "PATCH" | "DELETE" | "HEAD" | "OPTIONS"
-    )
+#[cfg(test)]
+mod tests {
+    use super::{is_known_subcommand_name, parse_cli_from, Command};
+
+    #[test]
+    fn ui_alias_is_recognized_as_subcommand() {
+        assert!(is_known_subcommand_name("ui"));
+        let parsed = parse_cli_from(["zapreq", "ui"]).expect("ui alias should parse");
+        assert!(matches!(parsed.command, Some(Command::Gui)));
+    }
+
+    #[test]
+    fn gui_subcommand_parses() {
+        let parsed = parse_cli_from(["zapreq", "gui"]).expect("gui should parse");
+        assert!(matches!(parsed.command, Some(Command::Gui)));
+    }
+
+    #[test]
+    fn tui_subcommand_still_parses() {
+        let parsed = parse_cli_from(["zapreq", "tui"]).expect("tui should parse");
+        assert!(matches!(parsed.command, Some(Command::Tui)));
+    }
 }

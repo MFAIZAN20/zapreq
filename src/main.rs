@@ -8,8 +8,9 @@ use std::time::Instant;
 use zapreq::ai::ai_assist;
 use zapreq::auth::{build_auth, AuthRegistry};
 use zapreq::cli::{
-    parse_cli_from, CliArgs, CollectionsCommand, Command, EnvCommand, PluginCommand,
-    RequestsCommand, SecretCommand,
+    is_known_subcommand_name, parse_cli_from, CliArgs, CollectionsCommand, Command, DocsCommand,
+    EnvCommand, NotesCommand, PerfCommand, PluginCommand, RegressionCommand, RequestsCommand,
+    SecretCommand, SecurityCommand,
 };
 use zapreq::collections::{
     add_request_to_workspace, create_workspace, delete_request, export_workspace, import_workspace,
@@ -20,26 +21,41 @@ use zapreq::config::{apply_profile, load_config, load_profile, merge_defaults, C
 use zapreq::diff::{diff_requests, print_diff};
 use zapreq::download::download;
 use zapreq::env_cmd::{get_profile, list_profiles, validate_profile};
+// egui desktop GUI removed, migrated to Tauri
 use zapreq::items::parse_request_items;
+use zapreq::notes::{
+    add_note, list_notes, note_history, render_history, render_notes, update_note,
+};
 use zapreq::output::{build_print_opts, render_exchange_from_cli};
+use zapreq::perf::{benchmark, render_report as render_perf_report};
 use zapreq::plugins::manager::{
     install_plugin, print_plugin_list, run_plugin_command, uninstall_plugin, validate_plugins,
+};
+use zapreq::regression::{
+    add_test_case, delete_test_case, list_test_cases, render_case_history,
+    render_latest_case_report, render_suite_report, run_suite,
 };
 use zapreq::request::{RequestEngine, RequestSpec};
 use zapreq::response::ResponseData;
 use zapreq::secrets::{get_secret, list_secret_keys, mask_secret, set_secret};
+use zapreq::security::{render_report as render_security_report, run_scan};
 use zapreq::sessions::{
     apply_session_to_request, load_session, save_session, update_session_from_exchange,
 };
 use zapreq::testing::{evaluate_response, render_text_report, TestOptions};
 use zapreq::tui::run_advanced_tui;
 use zapreq::utils::{humanize_bytes, humanize_duration, terminal_width, truncate_str};
+use zapreq::zapdocs::{generate_docs, render_report as render_docs_report};
 
 /// CAUS-CORERUNTIM-01, CAUS-CORERUNTIM-02, CAUS-CORERUNTIM-03, CAUS-CORERUNTIM-04, CAUS-CORERUNTIM-05, CAUS-INTERNAL-52:
 /// Main orchestration entrypoint with explicit contract wiring, isolated runtime state transitions, and exit-code handling.
 fn run() -> Result<i32> {
     let config = load_config().context("failed to load config")?;
     let mut argv: Vec<String> = std::env::args().collect();
+    if should_launch_default_gui(&argv) {
+        println!("ZapReq Desktop GUI has been migrated to Tauri. Run the desktop app directly, or use `npm run tauri dev` / `cargo tauri dev` to start the GUI. Alternatively, run `zapreq tui` for the Terminal UI, or `zapreq --help` for help.");
+        return Ok(0);
+    }
     if !is_raw_subcommand_invocation(&argv) {
         merge_defaults(&config, &mut argv);
     }
@@ -74,6 +90,10 @@ fn run() -> Result<i32> {
                 run_advanced_tui(&config)?;
                 return Ok(0);
             }
+            Command::Gui => {
+                println!("ZapReq Desktop GUI has been migrated to Tauri. Run the desktop app directly, or use `npm run tauri dev` / `cargo tauri dev` in the development directory.");
+                return Ok(0);
+            }
             Command::Run { alias, env_profile } => {
                 args = build_args_from_collection(&alias, env_profile, &config)?;
             }
@@ -104,7 +124,7 @@ fn run() -> Result<i32> {
                 let api_key = match std::env::var("ZAPREQ_AI_KEY") {
                     Ok(v) if !v.trim().is_empty() => v,
                     _ => {
-                        eprintln!("ZAPREQ_AI_KEY is not set. Export it first to use `http ai`.");
+                        eprintln!("ZAPREQ_AI_KEY is not set. Export it first to use `zapreq ai`.");
                         return Ok(1);
                     }
                 };
@@ -138,7 +158,7 @@ fn run() -> Result<i32> {
                     return Err(anyhow!("AI assistant did not return a URL"));
                 }
                 let command_preview = format!(
-                    "http {} {} {}",
+                    "zapreq {} {} {}",
                     method,
                     generated.url,
                     generated_items.join(" ")
@@ -152,7 +172,8 @@ fn run() -> Result<i32> {
                     println!("Body fields: {}", generated.body.len());
                 }
 
-                let mut synthetic = vec!["http".to_string(), method.clone(), generated.url.clone()];
+                let mut synthetic =
+                    vec!["zapreq".to_string(), method.clone(), generated.url.clone()];
                 synthetic.extend(generated_items.clone());
                 merge_defaults(&config, &mut synthetic);
                 let mut generated_cli =
@@ -186,7 +207,7 @@ fn run() -> Result<i32> {
             } => {
                 if request.is_empty() {
                     return Err(anyhow!(
-                        "test requires request tokens: `http test [ASSERTS] -- METHOD URL [ITEMS...]`"
+                        "test requires request tokens: `zapreq test [ASSERTS] -- METHOD URL [ITEMS...]`"
                     ));
                 }
                 let mut parsed = cli_from_saved_request_tokens(&request, &config)
@@ -275,9 +296,9 @@ fn run() -> Result<i32> {
                     }
                     CollectionsCommand::Export { name, path, format } => {
                         let fmt = parse_export_format(&format)?;
-                        export_workspace(&name, &path, fmt)
+                        let output_path = export_workspace(&name, &path, fmt)
                             .with_context(|| format!("failed to export workspace '{}'", name))?;
-                        println!("Exported workspace '{}' to {}", name, path);
+                        println!("Exported workspace '{}' to {}", name, output_path.display());
                     }
                     CollectionsCommand::Migrate { workspace } => {
                         let report = migrate_legacy_collections(&workspace)?;
@@ -331,6 +352,151 @@ fn run() -> Result<i32> {
                     return Ok(0);
                 }
             },
+            Command::Security { command } => {
+                match command {
+                    SecurityCommand::Scan {
+                        source,
+                        severity,
+                        live,
+                    } => {
+                        let report = run_scan(&source, severity, live, &config)
+                            .context("security scan failed")?;
+                        print!("{}", render_security_report(&report));
+                    }
+                }
+                return Ok(0);
+            }
+            Command::Docs { command } => {
+                match command {
+                    DocsCommand::Generate {
+                        source,
+                        format,
+                        output,
+                    } => {
+                        let report = generate_docs(&source, format, output.as_deref())
+                            .context("documentation generation failed")?;
+                        print!("{}", render_docs_report(&report));
+                    }
+                }
+                return Ok(0);
+            }
+            Command::Regression { command } => {
+                match command {
+                    RegressionCommand::Add {
+                        suite,
+                        name,
+                        source,
+                        expect_status,
+                        expect_header,
+                        expect_json,
+                        expect_body_contains,
+                        max_time_ms,
+                    } => {
+                        let opts = TestOptions {
+                            expect_status,
+                            expect_headers: expect_header,
+                            expect_json,
+                            expect_body_contains,
+                            max_time_ms,
+                        };
+                        add_test_case(&suite, &name, &source, &opts)
+                            .context("failed to save regression test case")?;
+                        println!("Saved test case '{}' in suite '{}'.", name, suite);
+                    }
+                    RegressionCommand::List { suite } => {
+                        let cases = list_test_cases(suite.as_deref())
+                            .context("failed to list regression cases")?;
+                        if cases.is_empty() {
+                            println!("No regression test cases found.");
+                        } else {
+                            for case in cases {
+                                println!(
+                                    "{}  {}  {} {}",
+                                    case.suite, case.name, case.method, case.url
+                                );
+                            }
+                        }
+                    }
+                    RegressionCommand::Run { suite } => {
+                        let report = run_suite(&suite, &config)
+                            .context("failed to execute regression suite")?;
+                        print!("{}", render_suite_report(&report));
+                        return Ok(if report.failed == 0 { 0 } else { 1 });
+                    }
+                    RegressionCommand::Delete { suite, name } => {
+                        let removed = delete_test_case(&suite, &name)
+                            .context("failed to delete test case")?;
+                        if removed {
+                            println!("Deleted test case '{}' from suite '{}'.", name, suite);
+                        } else {
+                            println!("No test case named '{}' found in suite '{}'.", name, suite);
+                            return Ok(1);
+                        }
+                    }
+                    RegressionCommand::History { suite, name } => {
+                        print!("{}", render_case_history(&suite, &name)?);
+                        print!("{}", render_latest_case_report(&suite, &name)?);
+                    }
+                }
+                return Ok(0);
+            }
+            Command::Perf { command } => {
+                match command {
+                    PerfCommand::Benchmark {
+                        source,
+                        iterations,
+                        duration_secs,
+                    } => {
+                        let report = benchmark(&source, iterations, duration_secs, &config)
+                            .context("performance benchmark failed")?;
+                        print!("{}", render_perf_report(&report));
+                    }
+                }
+                return Ok(0);
+            }
+            Command::Notes { command } => {
+                match command {
+                    NotesCommand::Add {
+                        source,
+                        title,
+                        tags,
+                        body,
+                    } => {
+                        let note = add_note(&source, title.as_deref(), &body, &tags)
+                            .context("failed to add note")?;
+                        print!("{}", render_notes(&[note]));
+                    }
+                    NotesCommand::Update {
+                        id,
+                        title,
+                        tags,
+                        body,
+                    } => {
+                        let note = update_note(id, title.as_deref(), &body, &tags)
+                            .context("failed to update note")?;
+                        print!("{}", render_notes(&[note]));
+                    }
+                    NotesCommand::List { source, query } => {
+                        let filter = if source.alias.is_none()
+                            && source.workspace.is_none()
+                            && source.file.is_none()
+                            && source.request.is_none()
+                        {
+                            None
+                        } else {
+                            Some(&source)
+                        };
+                        let notes =
+                            list_notes(filter, query.as_deref()).context("failed to list notes")?;
+                        print!("{}", render_notes(&notes));
+                    }
+                    NotesCommand::History { id } => {
+                        let history = note_history(id).context("failed to load note history")?;
+                        print!("{}", render_history(&history));
+                    }
+                }
+                return Ok(0);
+            }
             Command::Secrets { command } => {
                 match command {
                     SecretCommand::Set { key, value } => {
@@ -554,6 +720,20 @@ fn run() -> Result<i32> {
         .context("request execution failed")?;
     let elapsed_ms = started.elapsed().as_millis() as u64;
 
+    let _ = zapreq::localdb::record_http_report(
+        "CLI",
+        &trace.method,
+        &trace.url,
+        &response.final_url,
+        response.status_code,
+        &response.reason,
+        elapsed_ms,
+        response.body.len(),
+        response.content_type.as_deref(),
+        &response.headers,
+        &String::from_utf8_lossy(&response.body),
+    );
+
     if let Some((session_path, mut session_data)) = loaded_session {
         if !args.session_read_only {
             update_session_from_exchange(
@@ -612,24 +792,13 @@ fn run() -> Result<i32> {
 }
 
 fn is_raw_subcommand_invocation(argv: &[String]) -> bool {
-    matches!(
-        argv.get(1).map(String::as_str),
-        Some(
-            "plugins"
-                | "save"
-                | "run"
-                | "list"
-                | "delete"
-                | "ai"
-                | "test"
-                | "env"
-                | "collections"
-                | "requests"
-                | "secrets"
-                | "tui"
-                | "diff"
-        )
-    )
+    argv.get(1)
+        .map(String::as_str)
+        .is_some_and(is_known_subcommand_name)
+}
+
+fn should_launch_default_gui(argv: &[String]) -> bool {
+    argv.len() <= 1
 }
 
 /// CAUS-INTERNAL-51, CAUS-INTERNAL-55:
@@ -684,9 +853,13 @@ fn substitute_placeholders(input: &str, vars: &HashMap<String, String>) -> Strin
             .or_else(|| caps.get(2))
             .map(|m| m.as_str())
             .unwrap_or_default();
-        vars.get(key)
-            .cloned()
-            .unwrap_or_else(|| caps[0].to_string())
+        if let Some(val) = vars.get(key) {
+            val.clone()
+        } else if let Ok(Some(secret_val)) = get_secret(key) {
+            secret_val
+        } else {
+            caps[0].to_string()
+        }
     })
     .into_owned()
 }
@@ -813,7 +986,7 @@ fn cli_from_saved_request_tokens(
 ) -> Result<CliArgs> {
     if request.is_empty() {
         return Err(anyhow!(
-            "save requires request tokens: use `http save <alias> -- METHOD URL [ITEMS...]`"
+            "save requires request tokens: use `zapreq save <alias> -- METHOD URL [ITEMS...]`"
         ));
     }
     let mut tokens = request.to_vec();
@@ -824,7 +997,7 @@ fn cli_from_saved_request_tokens(
         return Err(anyhow!("no request tokens supplied after `--`"));
     }
 
-    let mut argv = vec!["http".to_string()];
+    let mut argv = vec!["zapreq".to_string()];
     argv.extend(tokens);
     merge_defaults(config, &mut argv);
     let parsed = parse_cli_from(argv).context("failed to parse request tokens for save")?;
@@ -842,7 +1015,11 @@ fn build_args_from_collection(
     run_request(alias, env_profile.as_deref())?;
     let entry =
         load_request(alias).with_context(|| format!("failed to load collection '{alias}'"))?;
-    let mut synthetic = vec!["http".to_string(), entry.method.clone(), entry.url.clone()];
+    let mut synthetic = vec![
+        "zapreq".to_string(),
+        entry.method.clone(),
+        entry.url.clone(),
+    ];
     synthetic.extend(entry.items.clone());
     merge_defaults(config, &mut synthetic);
     let mut args = parse_cli_from(synthetic).context("failed to parse saved request")?;
@@ -867,7 +1044,11 @@ fn build_args_from_workspace_request(
             request_ref, workspace
         )
     })?;
-    let mut synthetic = vec!["http".to_string(), entry.method.clone(), entry.url.clone()];
+    let mut synthetic = vec![
+        "zapreq".to_string(),
+        entry.method.clone(),
+        entry.url.clone(),
+    ];
     synthetic.extend(entry.items.clone());
     merge_defaults(config, &mut synthetic);
     let mut args = parse_cli_from(synthetic).context("failed to parse workspace request")?;
@@ -920,7 +1101,7 @@ fn cli_from_diff_tokens(
         tokens.remove(0);
     }
 
-    let mut argv = vec!["http".to_string()];
+    let mut argv = vec!["zapreq".to_string()];
     if let Some(first) = tokens.first() {
         let upper = first.to_ascii_uppercase();
         let looks_like_method = matches!(
@@ -943,4 +1124,34 @@ fn cli_from_diff_tokens(
         return Err(anyhow!("nested subcommands are not allowed in `diff`"));
     }
     Ok(parsed)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{is_raw_subcommand_invocation, should_launch_default_gui};
+
+    #[test]
+    fn no_args_launches_default_gui() {
+        assert!(should_launch_default_gui(&["zapreq".to_string()]));
+        assert!(!should_launch_default_gui(&[
+            "zapreq".to_string(),
+            "GET".to_string()
+        ]));
+    }
+
+    #[test]
+    fn gui_commands_are_treated_as_raw_subcommands() {
+        assert!(is_raw_subcommand_invocation(&[
+            "zapreq".to_string(),
+            "ui".to_string()
+        ]));
+        assert!(is_raw_subcommand_invocation(&[
+            "zapreq".to_string(),
+            "gui".to_string()
+        ]));
+        assert!(is_raw_subcommand_invocation(&[
+            "zapreq".to_string(),
+            "tui".to_string()
+        ]));
+    }
 }
