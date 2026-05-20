@@ -81,6 +81,13 @@ fn write_secret_file(file: &SecretFile) -> Result<()> {
     Ok(())
 }
 
+/// Deletes a secret value by key.
+pub fn delete_secret(key: &str) -> Result<()> {
+    let mut file = load_secret_file()?;
+    file.values.remove(key);
+    write_secret_file(&file)
+}
+
 fn secrets_path() -> Result<PathBuf> {
     Ok(config_root_dir()?.join("secrets.json"))
 }
