@@ -1,9 +1,9 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::response::ResponseData;
 
-/// Assertion options for the `http test` command.
+/// Assertion options for the `zapreq test` command.
 #[derive(Clone, Debug, Default)]
 pub struct TestOptions {
     pub expect_status: Option<u16>,
@@ -14,7 +14,7 @@ pub struct TestOptions {
 }
 
 /// One evaluated assertion.
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AssertionResult {
     pub assertion: String,
     pub passed: bool,
@@ -22,7 +22,7 @@ pub struct AssertionResult {
 }
 
 /// Structured report for test execution.
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TestReport {
     pub method: String,
     pub url: String,
