@@ -4,6 +4,9 @@ use crate::output::theme::Theme;
 
 /// Formats request line (METHOD PATH VERSION) with method coloring.
 pub fn format_request_line(method: &str, path: &str, version: &str, theme: &Theme) -> String {
+    if !theme.use_color {
+        return format!("{method} {path} {version}");
+    }
     let method_colored = method.color(method_color(method, theme)).bold().to_string();
     let path_colored = path.white().to_string();
     let version_dim = version.dimmed().to_string();
@@ -12,6 +15,9 @@ pub fn format_request_line(method: &str, path: &str, version: &str, theme: &Them
 
 /// Formats HTTP status line with class-based status coloring.
 pub fn format_status_line(status: u16, reason: &str, theme: &Theme) -> String {
+    if !theme.use_color {
+        return format!("{status} {reason}");
+    }
     let color = if (200..300).contains(&status) {
         theme.status_2xx
     } else if (300..400).contains(&status) {
@@ -27,6 +33,9 @@ pub fn format_status_line(status: u16, reason: &str, theme: &Theme) -> String {
 
 /// Formats one header line using theme header colors.
 pub fn format_header_line(name: &str, value: &str, theme: &Theme) -> String {
+    if !theme.use_color {
+        return format!("{name}: {value}");
+    }
     format!(
         "{}: {}",
         name.color(theme.header_name).bold(),
