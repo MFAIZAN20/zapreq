@@ -24,6 +24,7 @@ pub struct Theme {
     pub method_patch: Color,
     pub meta_border: Color,
     pub offline_msg: Color,
+    pub use_color: bool,
 }
 
 /// Monokai-like default theme.
@@ -48,6 +49,7 @@ pub fn monokai() -> Theme {
         method_patch: Color::Cyan,
         meta_border: Color::BrightBlack,
         offline_msg: Color::Yellow,
+        use_color: true,
     }
 }
 
@@ -73,6 +75,7 @@ pub fn solarized() -> Theme {
         method_patch: Color::Cyan,
         meta_border: Color::Blue,
         offline_msg: Color::Yellow,
+        use_color: true,
     }
 }
 
@@ -98,6 +101,7 @@ pub fn dracula() -> Theme {
         method_patch: Color::Magenta,
         meta_border: Color::Magenta,
         offline_msg: Color::Yellow,
+        use_color: true,
     }
 }
 
@@ -123,6 +127,7 @@ pub fn autumn() -> Theme {
         method_patch: Color::Magenta,
         meta_border: Color::Yellow,
         offline_msg: Color::Yellow,
+        use_color: true,
     }
 }
 
@@ -148,6 +153,7 @@ pub fn no_color() -> Theme {
         method_patch: Color::White,
         meta_border: Color::White,
         offline_msg: Color::White,
+        use_color: false,
     }
 }
 
