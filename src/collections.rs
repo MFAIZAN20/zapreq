@@ -35,6 +35,10 @@ pub struct WorkspaceRequest {
     pub headers: HashMap<String, String>,
     #[serde(default)]
     pub tests: Vec<String>,
+    #[serde(default)]
+    pub pre_request_script: Option<String>,
+    #[serde(default)]
+    pub post_response_script: Option<String>,
     pub created: String,
     pub updated: String,
 }
@@ -46,6 +50,8 @@ pub struct Workspace {
     pub version: u32,
     pub name: String,
     #[serde(default)]
+    pub description: String,
+    #[serde(default)]
     pub requests: Vec<WorkspaceRequest>,
     pub created: String,
     pub updated: String,
@@ -55,6 +61,8 @@ pub struct Workspace {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct WorkspaceSummary {
     pub name: String,
+    #[serde(default)]
+    pub description: String,
     pub request_count: usize,
     pub updated: String,
 }
@@ -159,6 +167,7 @@ pub fn create_workspace(name: &str) -> Result<Workspace> {
     let ws = Workspace {
         version: workspace_version(),
         name: name.to_string(),
+        description: String::new(),
         requests: Vec::new(),
         created: now.clone(),
         updated: now,
@@ -189,6 +198,7 @@ pub fn list_workspaces() -> Result<Vec<WorkspaceSummary>> {
             .with_context(|| format!("failed to parse workspace file: {}", path.display()))?;
         out.push(WorkspaceSummary {
             name: ws.name,
+            description: ws.description,
             request_count: ws.requests.len(),
             updated: ws.updated,
         });
@@ -219,6 +229,17 @@ pub fn save_workspace(workspace: &Workspace) -> Result<()> {
     }
     let raw = serde_json::to_string_pretty(workspace).context("failed to encode workspace JSON")?;
     std::fs::write(&path, raw).with_context(|| format!("failed to write {}", path.display()))?;
+    Ok(())
+}
+
+/// Deletes one workspace file by name.
+pub fn delete_workspace(name: &str) -> Result<()> {
+    validate_workspace_name(name)?;
+    let path = workspace_path(name)?;
+    if path.exists() {
+        std::fs::remove_file(&path)
+            .with_context(|| format!("failed to delete workspace: {}", path.display()))?;
+    }
     Ok(())
 }
 
@@ -253,6 +274,8 @@ pub fn add_request_to_workspace(
             items: cli.request_items.clone(),
             headers: HashMap::new(),
             tests: Vec::new(),
+            pre_request_script: None,
+            post_response_script: None,
             created: now.clone(),
             updated: now.clone(),
         });
@@ -292,12 +315,50 @@ pub fn load_workspace_request(workspace_name: &str, request_ref: &str) -> Result
     })
 }
 
-/// Imports a workspace from zapreq/postman/openapi JSON.
-pub fn import_workspace(name: &str, path: &str) -> Result<Workspace> {
+/// Loads request entries from an importable file without mutating local workspaces.
+pub fn load_requests_from_import_path(path: &str) -> Result<Vec<CollectionEntry>> {
     let raw = std::fs::read_to_string(path)
         .with_context(|| format!("failed to read import file: {path}"))?;
     let value: Value =
         serde_json::from_str(&raw).with_context(|| format!("failed to parse JSON: {path}"))?;
+
+    let requests = if value.get("requests").is_some() {
+        let ws: Workspace =
+            serde_json::from_value(value).context("failed to decode zapreq workspace JSON")?;
+        workspace_to_collection_entries(&ws)
+    } else if value.get("item").is_some() && value.get("info").is_some() {
+        let ws = parse_postman_import("__import__", &value)?;
+        workspace_to_collection_entries(&ws)
+    } else if value.get("paths").is_some() && value.get("openapi").is_some() {
+        let ws = parse_openapi_import("__import__", &value)?;
+        workspace_to_collection_entries(&ws)
+    } else if value.get("alias").is_some()
+        && value.get("method").is_some()
+        && value.get("url").is_some()
+    {
+        let entry: CollectionEntry =
+            serde_json::from_value(value).context("failed to decode legacy request JSON")?;
+        vec![entry]
+    } else {
+        return Err(anyhow!(
+            "unsupported import format: expected zapreq workspace, postman collection, openapi, or legacy request"
+        ));
+    };
+
+    Ok(requests)
+}
+
+/// Imports a workspace from zapreq/postman/openapi JSON.
+pub fn import_workspace(name: &str, path: &str) -> Result<Workspace> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err(anyhow!("workspace name cannot be empty"));
+    }
+    let path = validate_import_path(path)?;
+    let raw = std::fs::read_to_string(&path)
+        .with_context(|| format!("failed to read import file: {}", path.display()))?;
+    let value: Value =
+        serde_json::from_str(&raw).with_context(|| format!("failed to parse JSON: {}", path.display()))?;
 
     let ws = if value.get("requests").is_some() {
         let mut ws: Workspace =
@@ -325,6 +386,7 @@ pub fn import_workspace(name: &str, path: &str) -> Result<Workspace> {
         Workspace {
             version: workspace_version(),
             name: name.to_string(),
+            description: String::new(),
             requests: vec![WorkspaceRequest {
                 id: Uuid::new_v4().to_string(),
                 name: entry.alias,
@@ -333,6 +395,8 @@ pub fn import_workspace(name: &str, path: &str) -> Result<Workspace> {
                 items: entry.items,
                 headers: entry.headers,
                 tests: Vec::new(),
+                pre_request_script: None,
+                post_response_script: None,
                 created: now.clone(),
                 updated: now.clone(),
             }],
@@ -354,7 +418,7 @@ pub fn export_workspace(
     workspace_name: &str,
     path: &str,
     format: WorkspaceExportFormat,
-) -> Result<()> {
+) -> Result<PathBuf> {
     let ws = load_workspace(workspace_name)?;
     let payload = match format {
         WorkspaceExportFormat::Zapreq => {
@@ -365,8 +429,14 @@ pub fn export_workspace(
     };
 
     let text = serde_json::to_string_pretty(&payload).context("failed to encode export JSON")?;
-    std::fs::write(path, text).with_context(|| format!("failed to write export file: {path}"))?;
-    Ok(())
+    let output_path = resolve_export_path(path, workspace_name, &format)?;
+    if let Some(parent) = output_path.parent().filter(|parent| !parent.as_os_str().is_empty()) {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create export directory: {}", parent.display()))?;
+    }
+    std::fs::write(&output_path, text)
+        .with_context(|| format!("failed to write export file: {}", output_path.display()))?;
+    Ok(output_path)
 }
 
 /// Migrates legacy saved requests into a workspace.
@@ -400,6 +470,8 @@ pub fn migrate_legacy_collections(workspace_name: &str) -> Result<MigrationRepor
             items: entry.items.clone(),
             headers: entry.headers.clone(),
             tests: Vec::new(),
+            pre_request_script: None,
+            post_response_script: None,
             created: now.clone(),
             updated: now.clone(),
         });
@@ -425,6 +497,69 @@ pub fn parse_export_format(raw: &str) -> Result<WorkspaceExportFormat> {
             "unsupported export format '{}'; use zapreq|postman|openapi",
             raw
         )),
+    }
+}
+
+fn validate_import_path(raw: &str) -> Result<PathBuf> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(anyhow!("import file path cannot be empty"));
+    }
+
+    let path = PathBuf::from(trimmed);
+    if path.is_dir() {
+        return Err(anyhow!(
+            "import path is a directory; choose a JSON file instead: {}",
+            path.display()
+        ));
+    }
+    if !path.exists() {
+        return Err(anyhow!("import file does not exist: {}", path.display()));
+    }
+    Ok(path)
+}
+
+fn resolve_export_path(raw: &str, workspace_name: &str, format: &WorkspaceExportFormat) -> Result<PathBuf> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(anyhow!("export destination cannot be empty"));
+    }
+
+    let path = PathBuf::from(trimmed);
+    if path.is_dir() || trimmed.ends_with(std::path::MAIN_SEPARATOR) {
+        return Ok(path.join(default_export_filename(workspace_name, format)));
+    }
+
+    if path.file_name().is_none() {
+        return Err(anyhow!("export destination must be a file path or directory"));
+    }
+
+    Ok(path)
+}
+
+fn default_export_filename(workspace_name: &str, format: &WorkspaceExportFormat) -> String {
+    let slug = workspace_name
+        .trim()
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+                ch.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>()
+        .trim_matches('-')
+        .to_string();
+    let slug = if slug.is_empty() { "workspace".to_string() } else { slug };
+    format!("{slug}.{}", export_extension(format))
+}
+
+fn export_extension(format: &WorkspaceExportFormat) -> &'static str {
+    match format {
+        WorkspaceExportFormat::Zapreq => "zapreq.json",
+        WorkspaceExportFormat::Postman => "postman.json",
+        WorkspaceExportFormat::OpenApi => "openapi.json",
     }
 }
 
@@ -524,6 +659,8 @@ fn parse_postman_import(name: &str, value: &Value) -> Result<Workspace> {
             items: Vec::new(),
             headers: HashMap::new(),
             tests: Vec::new(),
+            pre_request_script: None,
+            post_response_script: None,
             created: now.clone(),
             updated: now.clone(),
         });
@@ -532,6 +669,7 @@ fn parse_postman_import(name: &str, value: &Value) -> Result<Workspace> {
     Ok(Workspace {
         version: workspace_version(),
         name: name.to_string(),
+        description: String::new(),
         requests,
         created: now.clone(),
         updated: now,
@@ -566,6 +704,8 @@ fn parse_openapi_import(name: &str, value: &Value) -> Result<Workspace> {
                 items: Vec::new(),
                 headers: HashMap::new(),
                 tests: Vec::new(),
+                pre_request_script: None,
+                post_response_script: None,
                 created: now.clone(),
                 updated: now.clone(),
             });
@@ -575,6 +715,7 @@ fn parse_openapi_import(name: &str, value: &Value) -> Result<Workspace> {
     Ok(Workspace {
         version: workspace_version(),
         name: name.to_string(),
+        description: String::new(),
         requests,
         created: now.clone(),
         updated: now,
@@ -604,6 +745,21 @@ fn openapi_path_and_method(req: &WorkspaceRequest) -> (String, String) {
             req.method.clone(),
         )
     }
+}
+
+fn workspace_to_collection_entries(workspace: &Workspace) -> Vec<CollectionEntry> {
+    workspace
+        .requests
+        .iter()
+        .map(|request| CollectionEntry {
+            alias: request.name.clone(),
+            method: request.method.clone(),
+            url: request.url.clone(),
+            items: request.items.clone(),
+            headers: request.headers.clone(),
+            created: request.created.clone(),
+        })
+        .collect()
 }
 
 fn save_collection_entry(entry: &CollectionEntry) -> Result<()> {
@@ -689,6 +845,7 @@ mod tests {
         let ws = Workspace {
             version: 1,
             name: "demo".to_string(),
+            description: String::new(),
             requests: vec![WorkspaceRequest {
                 id: "1".to_string(),
                 name: "hello".to_string(),
@@ -697,6 +854,8 @@ mod tests {
                 items: vec![],
                 headers: Default::default(),
                 tests: vec![],
+                pre_request_script: None,
+                post_response_script: None,
                 created: "2026-01-01T00:00:00Z".to_string(),
                 updated: "2026-01-01T00:00:00Z".to_string(),
             }],
@@ -712,6 +871,7 @@ mod tests {
         let ws = Workspace {
             version: 1,
             name: "demo".to_string(),
+            description: String::new(),
             requests: vec![WorkspaceRequest {
                 id: "1".to_string(),
                 name: "hello".to_string(),
@@ -720,6 +880,8 @@ mod tests {
                 items: vec![],
                 headers: Default::default(),
                 tests: vec![],
+                pre_request_script: None,
+                post_response_script: None,
                 created: "2026-01-01T00:00:00Z".to_string(),
                 updated: "2026-01-01T00:00:00Z".to_string(),
             }],
