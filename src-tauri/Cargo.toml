@@ -1,0 +1,21 @@
+[package]
+name = "zapreq-tauri"
+version = "0.1.4"
+edition = "2021"
+publish = false
+build = "build.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+anyhow = "1"
+base64 = "0.22"
+chrono = { version = "0.4", features = ["serde"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+regex = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tauri = { version = "2", features = [] }
+uuid = "1"
+zapreq = { path = ".." }
