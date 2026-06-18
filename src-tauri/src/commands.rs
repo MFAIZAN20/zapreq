@@ -271,6 +271,66 @@ pub fn get_request(payload: RequestLookupPayload) -> Result<RequestDto, String> 
     })
 }
 
+fn save_workspace_request_helper(ws: &mut Workspace, payload: &SaveRequestPayload, now: &str) -> String {
+    match &payload.id {
+        Some(id) if !id.is_empty() => {
+            if let Some(existing) = ws.requests.iter_mut().find(|r| r.id == *id) {
+                existing.name = payload.name.clone();
+                existing.method = payload.method.clone();
+                existing.url = payload.url.clone();
+                existing.items = payload.items.clone();
+                existing.pre_request_script = payload.pre_request_script.clone();
+                existing.post_response_script = payload.post_response_script.clone();
+                existing.updated = now.to_string();
+                id.clone()
+            } else {
+                let new_id = uuid::Uuid::new_v4().to_string();
+                ws.requests.push(WorkspaceRequest {
+                    id: new_id.clone(),
+                    name: payload.name.clone(),
+                    method: payload.method.clone(),
+                    url: payload.url.clone(),
+                    items: payload.items.clone(),
+                    headers: HashMap::new(),
+                    tests: Vec::new(),
+                    pre_request_script: payload.pre_request_script.clone(),
+                    post_response_script: payload.post_response_script.clone(),
+                    created: now.to_string(),
+                    updated: now.to_string(),
+                });
+                new_id
+            }
+        }
+        _ => {
+            if let Some(existing) = ws.requests.iter_mut().find(|r| r.name.eq_ignore_ascii_case(&payload.name)) {
+                existing.method = payload.method.clone();
+                existing.url = payload.url.clone();
+                existing.items = payload.items.clone();
+                existing.pre_request_script = payload.pre_request_script.clone();
+                existing.post_response_script = payload.post_response_script.clone();
+                existing.updated = now.to_string();
+                existing.id.clone()
+            } else {
+                let new_id = uuid::Uuid::new_v4().to_string();
+                ws.requests.push(WorkspaceRequest {
+                    id: new_id.clone(),
+                    name: payload.name.clone(),
+                    method: payload.method.clone(),
+                    url: payload.url.clone(),
+                    items: payload.items.clone(),
+                    headers: HashMap::new(),
+                    tests: Vec::new(),
+                    pre_request_script: payload.pre_request_script.clone(),
+                    post_response_script: payload.post_response_script.clone(),
+                    created: now.to_string(),
+                    updated: now.to_string(),
+                });
+                new_id
+            }
+        }
+    }
+}
+
 #[tauri::command]
 pub fn save_request(payload: SaveRequestPayload) -> Result<RequestDto, String> {
     try_command(|| {
@@ -284,63 +344,7 @@ pub fn save_request(payload: SaveRequestPayload) -> Result<RequestDto, String> {
             };
 
             let now = chrono::Utc::now().to_rfc3339();
-            let req_id = match payload.id {
-                Some(id) if !id.is_empty() => {
-                    if let Some(existing) = ws.requests.iter_mut().find(|r| r.id == id) {
-                        existing.name = payload.name.clone();
-                        existing.method = payload.method.clone();
-                        existing.url = payload.url.clone();
-                        existing.items = payload.items.clone();
-                        existing.pre_request_script = payload.pre_request_script.clone();
-                        existing.post_response_script = payload.post_response_script.clone();
-                        existing.updated = now.clone();
-                        id
-                    } else {
-                        let new_id = uuid::Uuid::new_v4().to_string();
-                        ws.requests.push(WorkspaceRequest {
-                            id: new_id.clone(),
-                            name: payload.name.clone(),
-                            method: payload.method.clone(),
-                            url: payload.url.clone(),
-                            items: payload.items.clone(),
-                            headers: HashMap::new(),
-                            tests: Vec::new(),
-                            pre_request_script: payload.pre_request_script.clone(),
-                            post_response_script: payload.post_response_script.clone(),
-                            created: now.clone(),
-                            updated: now.clone(),
-                        });
-                        new_id
-                    }
-                }
-                _ => {
-                    if let Some(existing) = ws.requests.iter_mut().find(|r| r.name.eq_ignore_ascii_case(&payload.name)) {
-                        existing.method = payload.method.clone();
-                        existing.url = payload.url.clone();
-                        existing.items = payload.items.clone();
-                        existing.pre_request_script = payload.pre_request_script.clone();
-                        existing.post_response_script = payload.post_response_script.clone();
-                        existing.updated = now.clone();
-                        existing.id.clone()
-                    } else {
-                        let new_id = uuid::Uuid::new_v4().to_string();
-                        ws.requests.push(WorkspaceRequest {
-                            id: new_id.clone(),
-                            name: payload.name.clone(),
-                            method: payload.method.clone(),
-                            url: payload.url.clone(),
-                            items: payload.items.clone(),
-                            headers: HashMap::new(),
-                            tests: Vec::new(),
-                            pre_request_script: payload.pre_request_script.clone(),
-                            post_response_script: payload.post_response_script.clone(),
-                            created: now.clone(),
-                            updated: now.clone(),
-                        });
-                        new_id
-                    }
-                }
-            };
+            let req_id = save_workspace_request_helper(&mut ws, &payload, &now);
 
             ws.updated = now;
             zapreq::collections::save_workspace(&ws)?;
@@ -861,6 +865,52 @@ fn substitute_item_value(raw: &str, vars: &HashMap<String, String>) -> String {
 // SCRIPT RUNNER AND UTILITIES FOR PRE/POST HOOKS
 // ==========================================
 
+fn parse_items_to_headers_and_params(items: &[String]) -> (HashMap<String, String>, Vec<String>) {
+    let mut headers = HashMap::new();
+    let mut params = Vec::new();
+    for item in items {
+        if let Some((k, v)) = item.split_once(':') {
+            headers.insert(k.trim().to_string(), v.trim().to_string());
+        } else {
+            params.push(item.clone());
+        }
+    }
+    (headers, params)
+}
+
+fn apply_updated_context(
+    updated_context: &serde_json::Value,
+    method: &mut String,
+    url: &mut String,
+    variables: &mut HashMap<String, String>,
+    items: &mut Vec<String>,
+    params: &[String],
+) {
+    if let Some(new_method) = updated_context.get("method").and_then(|v| v.as_str()) {
+        *method = new_method.to_string();
+    }
+    if let Some(new_url) = updated_context.get("url").and_then(|v| v.as_str()) {
+        *url = new_url.to_string();
+    }
+    if let Some(new_vars) = updated_context.get("variables").and_then(|v| v.as_object()) {
+        for (k, v) in new_vars {
+            if let Some(val_str) = v.as_str() {
+                variables.insert(k.clone(), val_str.to_string());
+            }
+        }
+    }
+    if let Some(new_headers) = updated_context.get("headers").and_then(|v| v.as_object()) {
+        let mut new_items = Vec::new();
+        for (k, v) in new_headers {
+            if let Some(val_str) = v.as_str() {
+                new_items.push(format!("{}: {}", k, val_str));
+            }
+        }
+        new_items.extend(params.to_vec());
+        *items = new_items;
+    }
+}
+
 fn run_pre_request_script(
     script: &str,
     method: &mut String,
@@ -873,15 +923,7 @@ fn run_pre_request_script(
     let context_path = temp_dir.join("context.json");
     let script_path = temp_dir.join("script.js");
 
-    let mut headers = HashMap::new();
-    let mut params = Vec::new();
-    for item in items.iter() {
-        if let Some((k, v)) = item.split_once(':') {
-            headers.insert(k.trim().to_string(), v.trim().to_string());
-        } else {
-            params.push(item.clone());
-        }
-    }
+    let (headers, params) = parse_items_to_headers_and_params(items);
 
     let context = serde_json::json!({
         "method": method.clone(),
@@ -936,30 +978,7 @@ fs.writeFileSync('{}', JSON.stringify(context, null, 2));
             if out.status.success() {
                 let updated_data = std::fs::read_to_string(&context_path)?;
                 let updated_context: serde_json::Value = serde_json::from_str(&updated_data)?;
-
-                if let Some(new_method) = updated_context.get("method").and_then(|v| v.as_str()) {
-                    *method = new_method.to_string();
-                }
-                if let Some(new_url) = updated_context.get("url").and_then(|v| v.as_str()) {
-                    *url = new_url.to_string();
-                }
-                if let Some(new_vars) = updated_context.get("variables").and_then(|v| v.as_object()) {
-                    for (k, v) in new_vars {
-                        if let Some(val_str) = v.as_str() {
-                            variables.insert(k.clone(), val_str.to_string());
-                        }
-                    }
-                }
-                if let Some(new_headers) = updated_context.get("headers").and_then(|v| v.as_object()) {
-                    let mut new_items = Vec::new();
-                    for (k, v) in new_headers {
-                        if let Some(val_str) = v.as_str() {
-                            new_items.push(format!("{}: {}", k, val_str));
-                        }
-                    }
-                    new_items.extend(params);
-                    *items = new_items;
-                }
+                apply_updated_context(&updated_context, method, url, variables, items, &params);
                 Ok(())
             } else {
                 let stderr = String::from_utf8_lossy(&out.stderr);
@@ -971,6 +990,29 @@ fs.writeFileSync('{}', JSON.stringify(context, null, 2));
 
     let _ = std::fs::remove_dir_all(&temp_dir);
     result
+}
+
+fn apply_updated_post_context(
+    updated_context: &serde_json::Value,
+    variables: &mut HashMap<String, String>,
+) -> Vec<String> {
+    if let Some(new_vars) = updated_context.get("variables").and_then(|v| v.as_object()) {
+        for (k, v) in new_vars {
+            if let Some(val_str) = v.as_str() {
+                variables.insert(k.clone(), val_str.to_string());
+            }
+        }
+    }
+
+    let mut test_results = Vec::new();
+    if let Some(tests_arr) = updated_context.get("tests").and_then(|v| v.as_array()) {
+        for t in tests_arr {
+            if let Some(t_str) = t.as_str() {
+                test_results.push(t_str.to_string());
+            }
+        }
+    }
+    test_results
 }
 
 fn run_post_response_script(
@@ -1057,23 +1099,7 @@ fs.writeFileSync('{}', JSON.stringify(context, null, 2));
             if out.status.success() {
                 let updated_data = std::fs::read_to_string(&context_path)?;
                 let updated_context: serde_json::Value = serde_json::from_str(&updated_data)?;
-
-                if let Some(new_vars) = updated_context.get("variables").and_then(|v| v.as_object()) {
-                    for (k, v) in new_vars {
-                        if let Some(val_str) = v.as_str() {
-                            variables.insert(k.clone(), val_str.to_string());
-                        }
-                    }
-                }
-
-                let mut test_results = Vec::new();
-                if let Some(tests_arr) = updated_context.get("tests").and_then(|v| v.as_array()) {
-                    for t in tests_arr {
-                        if let Some(t_str) = t.as_str() {
-                            test_results.push(t_str.to_string());
-                        }
-                    }
-                }
+                let test_results = apply_updated_post_context(&updated_context, variables);
                 Ok(test_results)
             } else {
                 let stderr = String::from_utf8_lossy(&out.stderr);
