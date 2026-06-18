@@ -473,7 +473,6 @@ function parseRequestItems(items: string[]) {
         type: 'string',
         enabled: true
       });
-      continue;
     }
   }
 
@@ -547,8 +546,7 @@ function tokenizeCurlInput(input: string): string[] {
   let inSingleQuote = false;
   let escaped = false;
   
-  for (let i = 0; i < cleanInput.length; i++) {
-    const char = cleanInput[i];
+  for (const char of cleanInput) {
     if (escaped) {
       current += char;
       escaped = false;
@@ -730,8 +728,10 @@ function formatResponseBody(response: ResponseDto) {
   }
 
   if (isHtmlResponse(response)) {
-    const titleMatch = response.body.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
-    const headingMatch = response.body.match(/<h1[^>]*>([\s\S]*?)<\/h1>/i);
+    const titleRe = /<title[^>]*>([\s\S]*?)<\/title>/i;
+    const headingRe = /<h1[^>]*>([\s\S]*?)<\/h1>/i;
+    const titleMatch = titleRe.exec(response.body);
+    const headingMatch = headingRe.exec(response.body);
     const title = decodeHtmlEntities((headingMatch?.[1] || titleMatch?.[1] || '').replace(/<[^>]+>/g, '').trim());
     const text = decodeHtmlEntities(
       response.body
@@ -797,7 +797,9 @@ function historyKey(method?: string, url?: string) {
 
 function formatMs(value?: number) {
   if (typeof value !== 'number') return 'n/a';
-  return value >= 1000 ? `${(value / 1000).toFixed(value >= 10000 ? 1 : 2)} s` : `${value} ms`;
+  if (value >= 10000) return `${(value / 1000).toFixed(1)} s`;
+  if (value >= 1000) return `${(value / 1000).toFixed(2)} s`;
+  return `${value} ms`;
 }
 
 function formatBytes(value?: number) {
@@ -853,29 +855,37 @@ function formattedJson(source: string) {
   }
 }
 
+/** Classify a JSON token into a CSS class name for syntax highlighting. */
+function classifyJsonToken(token: string, nextChar: string): string {
+  if (token.startsWith('"')) return nextChar === ':' ? 'json-key' : 'json-string';
+  if (token === 'true' || token === 'false') return 'json-boolean';
+  if (token === 'null') return 'json-null';
+  if (token[0] === '-' || (token[0] >= '0' && token[0] <= '9')) return 'json-number';
+  return 'json-punctuation';
+}
+
+// Regex sub-patterns kept short to stay below the SonarQube complexity limit
+const JSON_STRING_PAT = '"(?:\\\\u[\\da-fA-F]{4}|\\\\[^u]|[^\\\\"])*"';
+const JSON_NUMBER_PAT = '-?\\d+(?:\\.\\d+)?(?:[eE][+-]?\\d+)?';
+const JSON_TOKEN_RE = new RegExp(
+  `(${JSON_STRING_PAT}|${JSON_NUMBER_PAT}|true|false|null|[{}[\\],:`  + '\\]])',
+  'g'
+);
+
 function highlightJson(source: string): ReactNode[] {
   const nodes: ReactNode[] = [];
-  const tokenPattern = /("(?:\\u[\da-fA-F]{4}|\\[^u]|[^\\"])*"|[-]?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?|true|false|null|[{}[\],:])/g;
+  JSON_TOKEN_RE.lastIndex = 0;
   let lastIndex = 0;
   let match: RegExpExecArray | null;
 
-  while ((match = tokenPattern.exec(source)) !== null) {
+  while ((match = JSON_TOKEN_RE.exec(source)) !== null) {
     const token = match[0];
     if (match.index > lastIndex) {
       nodes.push(source.slice(lastIndex, match.index));
     }
 
     const nextChar = source.slice(match.index + token.length).trimStart()[0];
-    let className = 'json-punctuation';
-    if (token.startsWith('"')) {
-      className = nextChar === ':' ? 'json-key' : 'json-string';
-    } else if (/^-?\d/.test(token)) {
-      className = 'json-number';
-    } else if (token === 'true' || token === 'false') {
-      className = 'json-boolean';
-    } else if (token === 'null') {
-      className = 'json-null';
-    }
+    const className = classifyJsonToken(token, nextChar);
 
     nodes.push(
       <span className={className} key={`${match.index}-${token}`}>
@@ -892,7 +902,7 @@ function highlightJson(source: string): ReactNode[] {
   return nodes;
 }
 
-function JsonCode({ source }: { source: string }) {
+function JsonCode({ source }: Readonly<{ source: string }>) {
   return (
     <pre className="json-viewer">
       <code>{highlightJson(formattedJson(source))}</code>
@@ -907,8 +917,7 @@ function buildRequestTree(requests: RequestDto[], emptyFolders: string[] = []): 
     const segments = folderPath.split('/').map(s => s.trim()).filter(Boolean);
     let current = root;
     let currentPath = '';
-    for (let i = 0; i < segments.length; i++) {
-      const seg = segments[i];
+    for (const seg of segments) {
       currentPath = currentPath ? `${currentPath} / ${seg}` : seg;
       let child = current.children.find(c => c.name === seg);
       if (!child) {
@@ -935,14 +944,18 @@ function buildRequestTree(requests: RequestDto[], emptyFolders: string[] = []): 
     
     let current = root;
     let currentPath = '';
+    let segIndex = 0;
     
-    for (let i = 0; i < segments.length; i++) {
-      const seg = segments[i];
+    for (const seg of segments) {
       currentPath = currentPath ? `${currentPath} / ${seg}` : seg;
       
-      const isLast = i === segments.length - 1;
+      const isLast = segIndex === segments.length - 1;
       let child = current.children.find(c => c.name === seg);
-      if (!child) {
+      if (child) {
+        if (!isLast) {
+          child.isFolder = true;
+        }
+      } else {
         child = {
           name: seg,
           path: currentPath,
@@ -951,16 +964,13 @@ function buildRequestTree(requests: RequestDto[], emptyFolders: string[] = []): 
           requests: []
         };
         current.children.push(child);
-      } else {
-        if (!isLast) {
-          child.isFolder = true;
-        }
       }
       
       if (isLast) {
         child.requests.push(req);
       }
       current = child;
+      segIndex++;
     }
   }
 
@@ -990,9 +1000,9 @@ function buildSuiteTree(testCases: StoredTestCase[]): SuiteTreeNode[] {
     
     let current = root;
     let currentPath = '';
+    let segIndex = 0;
     
-    for (let i = 0; i < segments.length; i++) {
-      const seg = segments[i];
+    for (const seg of segments) {
       currentPath = currentPath ? `${currentPath} / ${seg}` : seg;
       
       let child = current.children.find(c => c.name === seg);
@@ -1007,10 +1017,11 @@ function buildSuiteTree(testCases: StoredTestCase[]): SuiteTreeNode[] {
         current.children.push(child);
       }
       
-      if (i === segments.length - 1) {
+      if (segIndex === segments.length - 1) {
         child.cases.push(tc);
       }
       current = child;
+      segIndex++;
     }
   }
 
@@ -1027,7 +1038,7 @@ function buildSuiteTree(testCases: StoredTestCase[]): SuiteTreeNode[] {
   return root.children;
 }
 
-function TestCasesDonutChart({ passed, failed, untested }: { passed: number, failed: number, untested: number }) {
+function TestCasesDonutChart({ passed, failed, untested }: Readonly<{ passed: number, failed: number, untested: number }>) {
   const total = passed + failed + untested;
   if (total === 0) {
     return (
@@ -1362,12 +1373,12 @@ export default function App() {
 
   useEffect(() => {
     if (isResizingSidebar || isResizingResponse) {
-      window.addEventListener('mousemove', handleMouseMove);
-      window.addEventListener('mouseup', handleMouseUp);
+      globalThis.addEventListener('mousemove', handleMouseMove);
+      globalThis.addEventListener('mouseup', handleMouseUp);
     }
     return () => {
-      window.removeEventListener('mousemove', handleMouseMove);
-      window.removeEventListener('mouseup', handleMouseUp);
+      globalThis.removeEventListener('mousemove', handleMouseMove);
+      globalThis.removeEventListener('mouseup', handleMouseUp);
     };
   }, [isResizingSidebar, isResizingResponse, handleMouseMove, handleMouseUp]);
 
@@ -1434,11 +1445,11 @@ export default function App() {
       method: method,
       url: url,
       items: items,
-      expect_status: expectStatus.trim() ? parseInt(expectStatus.trim(), 10) : null,
+      expect_status: expectStatus.trim() ? Number.parseInt(expectStatus.trim(), 10) : null,
       expect_headers: [],
       expect_json: [],
       expect_body_contains: expectContains.trim() ? [expectContains.trim()] : [],
-      max_time_ms: expectMaxTime.trim() ? parseInt(expectMaxTime.trim(), 10) : null,
+      max_time_ms: expectMaxTime.trim() ? Number.parseInt(expectMaxTime.trim(), 10) : null,
     };
 
     try {
@@ -1463,7 +1474,7 @@ export default function App() {
       const dbTests = await invoke<StoredTestCase[]>('get_test_cases');
       setTestCases(dbTests);
       
-      if (selectedTestCase && selectedTestCase.suite === suite && selectedTestCase.name === name) {
+      if (selectedTestCase?.suite === suite && selectedTestCase?.name === name) {
         setSelectedTestCase(null);
         setRunReport(null);
       }
@@ -1546,7 +1557,7 @@ export default function App() {
       const dbRuns = await invoke<TestRunDto[]>('get_test_runs');
       setTestRuns(dbRuns);
       
-      if (selectedSuitePath === suitePath || (selectedSuitePath && selectedSuitePath.startsWith(suitePath + ' / '))) {
+      if (selectedSuitePath === suitePath || selectedSuitePath?.startsWith(suitePath + ' / ')) {
         setSelectedSuitePath(null);
         setSuiteReport(null);
       }
@@ -1773,7 +1784,7 @@ export default function App() {
         }
       }
       
-      if (activeRequest && activeRequest.id === reqId) {
+      if (activeRequest?.id === reqId) {
         setActiveRequest(null);
         setResponse(null);
       }
@@ -2155,10 +2166,13 @@ export default function App() {
             </span>
           </div>
           
-          <div style={{ display: 'flex', gap: '4px', marginRight: '6px' }} onClick={e => e.stopPropagation()}>
+          <div style={{ display: 'flex', gap: '4px', marginRight: '6px' }}>
             <button 
               className="icon-btn"
-              onClick={() => handleCreateRequestInFolder(node.path)}
+              onClick={(e) => {
+                e.stopPropagation();
+                handleCreateRequestInFolder(node.path);
+              }}
               title="New Request in Folder"
               style={{ padding: '4px' }}
             >
@@ -2166,7 +2180,10 @@ export default function App() {
             </button>
             <button 
               className="icon-btn delete-btn-hover"
-              onClick={() => handleDeleteRequestFolder(node.path)}
+              onClick={(e) => {
+                e.stopPropagation();
+                handleDeleteRequestFolder(node.path);
+              }}
               title="Delete Folder"
               style={{ padding: '4px' }}
             >
@@ -2294,6 +2311,8 @@ export default function App() {
           <div key={pathKey} style={{ display: 'flex', flexDirection: 'column' }}>
             <div 
               className={`request-tree-item ${isSuiteActive ? 'active' : ''}`}
+              role="button"
+              tabIndex={0}
               style={{ 
                 display: 'flex', 
                 justifyContent: 'space-between', 
@@ -2306,6 +2325,14 @@ export default function App() {
                 setSelectedSuitePath(node.path);
                 setSelectedTestCase(null);
                 setSuiteReport(null);
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  setSelectedSuitePath(node.path);
+                  setSelectedTestCase(null);
+                  setSuiteReport(null);
+                }
               }}
             >
               <div style={{ display: 'flex', alignItems: 'center', gap: '6px', minWidth: 0, flex: 1 }}>
@@ -2328,10 +2355,11 @@ export default function App() {
                 </span>
               </div>
               
-              <div style={{ display: 'flex', gap: '2px' }} onClick={e => e.stopPropagation()}>
+              <div style={{ display: 'flex', gap: '2px' }}>
                 <button 
                   className="icon-btn"
-                  onClick={() => {
+                  onClick={(e) => {
+                    e.stopPropagation();
                     setSelectedSuitePath(node.path);
                     setSelectedTestCase(null);
                     handleRunTestSuite(node.path);
@@ -2342,7 +2370,10 @@ export default function App() {
                 </button>
                 <button 
                   className="icon-btn"
-                  onClick={() => handleDeleteTestSuite(node.path)}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleDeleteTestSuite(node.path);
+                  }}
                   title="Delete Suite / Folder"
                 >
                   <Trash size={12} style={{ color: 'var(--color-delete)' }} />
@@ -2359,10 +2390,20 @@ export default function App() {
                     <div 
                       key={idx}
                       className={`request-tree-item ${isActive ? 'active' : ''}`}
+                      role="button"
+                      tabIndex={0}
                       onClick={() => {
                         setSelectedTestCase(tc);
                         setSelectedSuitePath(null);
                         setRunReport(null);
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          e.preventDefault();
+                          setSelectedTestCase(tc);
+                          setSelectedSuitePath(null);
+                          setRunReport(null);
+                        }
                       }}
                       style={{ 
                         display: 'flex', 
@@ -2435,7 +2476,15 @@ export default function App() {
       <div 
         key={rep.id} 
         className={`request-tree-item ${isActive ? 'active' : ''}`}
+        role="button"
+        tabIndex={0}
         onClick={() => setSelectedReport(rep)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            setSelectedReport(rep);
+          }
+        }}
         style={{ flexDirection: 'column', alignItems: 'flex-start', gap: '4px', padding: '10px' }}
       >
         <div style={{ display: 'flex', width: '100%', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -3048,11 +3097,21 @@ export default function App() {
               <div className="request-tree-container">
                 <div 
                   className={`request-tree-item ${(!selectedTestCase && !selectedSuitePath) ? 'active' : ''}`}
+                  role="button"
+                  tabIndex={0}
                   style={{ display: 'flex', alignItems: 'center', gap: '6px', fontWeight: '600', height: '32px', marginBottom: '8px', paddingLeft: '6px' }}
                   onClick={() => {
                     setSelectedTestCase(null);
                     setSelectedSuitePath(null);
                     setSuiteReport(null);
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      setSelectedTestCase(null);
+                      setSelectedSuitePath(null);
+                      setSuiteReport(null);
+                    }
                   }}
                 >
                   <ShieldCheck size={14} style={{ color: 'var(--accent-hover)' }} />
@@ -3153,11 +3212,21 @@ export default function App() {
                         {testCases.filter(tc => tc.suite === selectedSuitePath || tc.suite.startsWith(selectedSuitePath + ' / ')).map((tc, i) => (
                           <div 
                             key={i} 
+                            role="button"
+                            tabIndex={0}
                             style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px 14px', backgroundColor: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: '6px', cursor: 'pointer' }}
                             onClick={() => {
                               setSelectedTestCase(tc);
                               setSelectedSuitePath(null);
                               setRunReport(null);
+                            }}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter' || e.key === ' ') {
+                                e.preventDefault();
+                                setSelectedTestCase(tc);
+                                setSelectedSuitePath(null);
+                                setRunReport(null);
+                              }
                             }}
                           >
                             <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
@@ -3488,7 +3557,7 @@ export default function App() {
                                     const severity = f.severity?.toLowerCase() || '';
                                     return (
                                       <div 
-                                        key={idx} 
+                                        key={`${f.endpoint || 'finding'}-${f.title || ''}-${idx}`} 
                                         style={{ 
                                           backgroundColor: 'var(--bg-secondary)', 
                                           border: '1px solid var(--border-color)', 
@@ -3565,7 +3634,7 @@ export default function App() {
 
                               <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
                                 {parsedPayload.endpoints.map((ep, idx: number) => (
-                                  <div key={idx} style={{ backgroundColor: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: '8px', padding: '16px' }}>
+                                  <div key={ep.endpoint || `ep-${idx}`} style={{ backgroundColor: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: '8px', padding: '16px' }}>
                                     <h4 style={{ fontSize: '14px', fontWeight: '600', marginBottom: '12px', fontFamily: 'monospace', color: 'var(--text-primary)', wordBreak: 'break-all' }}>{ep.endpoint}</h4>
                                     
                                     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(100px, 1fr))', gap: '12px', marginBottom: '16px' }}>
@@ -4061,37 +4130,35 @@ export default function App() {
               </div>
 
               {selectedRequestForTestCaseId === "custom" && (
-                <>
-                  <div style={{ display: 'flex', gap: '8px', alignItems: 'flex-end' }}>
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', width: '90px' }}>
-                      <label htmlFor="tc-method-select" style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>Method</label>
-                      <select 
-                        id="tc-method-select"
-                        className="kv-input" 
-                        value={tcRequestMethod} 
-                        onChange={(e) => setTcRequestMethod(e.target.value)}
-                        style={{ minWidth: 'auto', width: '100%', cursor: 'pointer' }}
-                      >
-                        <option value="GET">GET</option>
-                        <option value="POST">POST</option>
-                        <option value="PUT">PUT</option>
-                        <option value="DELETE">DELETE</option>
-                        <option value="PATCH">PATCH</option>
-                      </select>
-                    </div>
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', flex: 1 }}>
-                      <label htmlFor="tc-url-input" style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>URL</label>
-                      <input 
-                        id="tc-url-input"
-                        type="text" 
-                        className="kv-input" 
-                        value={tcRequestUrl} 
-                        onChange={(e) => setTcRequestUrl(e.target.value)}
-                        placeholder="https://api.example.com/endpoint"
-                      />
-                    </div>
+                <div style={{ display: 'flex', gap: '8px', alignItems: 'flex-end' }}>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', width: '90px' }}>
+                    <label htmlFor="tc-method-select" style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>Method</label>
+                    <select 
+                      id="tc-method-select"
+                      className="kv-input" 
+                      value={tcRequestMethod} 
+                      onChange={(e) => setTcRequestMethod(e.target.value)}
+                      style={{ minWidth: 'auto', width: '100%', cursor: 'pointer' }}
+                    >
+                      <option value="GET">GET</option>
+                      <option value="POST">POST</option>
+                      <option value="PUT">PUT</option>
+                      <option value="DELETE">DELETE</option>
+                      <option value="PATCH">PATCH</option>
+                    </select>
                   </div>
-                </>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', flex: 1 }}>
+                    <label htmlFor="tc-url-input" style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>URL</label>
+                    <input 
+                      id="tc-url-input"
+                      type="text" 
+                      className="kv-input" 
+                      value={tcRequestUrl} 
+                      onChange={(e) => setTcRequestUrl(e.target.value)}
+                      placeholder="https://api.example.com/endpoint"
+                    />
+                  </div>
+                </div>
               )}
               
               <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
@@ -4116,7 +4183,7 @@ export default function App() {
                       type="text" 
                       className="kv-input" 
                       value={expectStatus} 
-                      onChange={(e) => setExpectStatus(e.target.value.replace(/[^0-9]/g, ''))}
+                      onChange={(e) => setExpectStatus(e.target.value.replace(/\D/g, ''))}
                       placeholder="e.g. 200"
                       style={{ width: '80px', textAlign: 'center', padding: '4px' }}
                     />
@@ -4128,7 +4195,7 @@ export default function App() {
                       type="text" 
                       className="kv-input" 
                       value={expectMaxTime} 
-                      onChange={(e) => setExpectMaxTime(e.target.value.replace(/[^0-9]/g, ''))}
+                      onChange={(e) => setExpectMaxTime(e.target.value.replace(/\D/g, ''))}
                       placeholder="e.g. 500"
                       style={{ width: '80px', textAlign: 'center', padding: '4px' }}
                     />

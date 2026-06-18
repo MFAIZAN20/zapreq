@@ -593,24 +593,7 @@ where
         .method_or_url
         .ok_or_else(|| anyhow!("missing METHOD/URL positional arguments"))?;
 
-    let (method, url, request_items) = if let Some(second_positional) = raw.maybe_url {
-        if looks_like_method(&first) {
-            (
-                first.to_ascii_uppercase(),
-                second_positional,
-                raw.request_items,
-            )
-        } else {
-            let mut items = Vec::with_capacity(1 + raw.request_items.len());
-            items.push(second_positional);
-            items.extend(raw.request_items);
-            let inferred = infer_method(&items);
-            (inferred, first, items)
-        }
-    } else {
-        let inferred = infer_method(&raw.request_items);
-        (inferred, first, raw.request_items)
-    };
+    let (method, url, request_items) = parse_positional_args(first, raw.maybe_url, raw.request_items);
 
     Ok(CliArgs {
         method,
@@ -713,6 +696,31 @@ pub fn is_known_subcommand_name(cmd: &str) -> bool {
             | "tui"
             | "diff"
     )
+}
+
+fn parse_positional_args(
+    first: String,
+    maybe_url: Option<String>,
+    request_items: Vec<String>,
+) -> (String, String, Vec<String>) {
+    if let Some(second_positional) = maybe_url {
+        if looks_like_method(&first) {
+            (
+                first.to_ascii_uppercase(),
+                second_positional,
+                request_items,
+            )
+        } else {
+            let mut items = Vec::with_capacity(1 + request_items.len());
+            items.push(second_positional);
+            items.extend(request_items);
+            let inferred = infer_method(&items);
+            (inferred, first, items)
+        }
+    } else {
+        let inferred = infer_method(&request_items);
+        (inferred, first, request_items)
+    }
 }
 
 #[cfg(test)]
