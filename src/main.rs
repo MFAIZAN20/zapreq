@@ -166,7 +166,10 @@ fn prepare_run_args(config: &zapreq::config::Config) -> Result<PreparedRun> {
         }
     }
 
-    Ok(PreparedRun::Continue { args: Box::new(args), pending_test })
+    Ok(PreparedRun::Continue {
+        args: Box::new(args),
+        pending_test,
+    })
 }
 
 fn prepare_request_context(args: &mut CliArgs) -> Result<PreparedRequestContext> {
@@ -1451,9 +1454,9 @@ fn cli_from_diff_tokens(
 #[cfg(test)]
 mod tests {
     use super::{
-        append_resume_range_header, collect_resolved_items, final_status_code,
-        infer_ssl_label, is_raw_subcommand_invocation, load_env_file, maybe_render_test_report,
-        parse_cli_from, resolve_request_items, resolve_request_url, should_launch_default_gui,
+        append_resume_range_header, collect_resolved_items, final_status_code, infer_ssl_label,
+        is_raw_subcommand_invocation, load_env_file, maybe_render_test_report, parse_cli_from,
+        resolve_request_items, resolve_request_url, should_launch_default_gui,
         substitute_item_value, validate_unresolved_values,
     };
     use std::collections::HashMap;
@@ -1464,8 +1467,12 @@ mod tests {
     use zapreq::testing::TestOptions;
 
     fn parse_args(argv: &[&str]) -> zapreq::cli::CliArgs {
-        parse_cli_from(argv.iter().map(|arg| (*arg).to_string()).collect::<Vec<_>>())
-            .expect("cli args should parse")
+        parse_cli_from(
+            argv.iter()
+                .map(|arg| (*arg).to_string())
+                .collect::<Vec<_>>(),
+        )
+        .expect("cli args should parse")
     }
 
     #[test]
@@ -1586,8 +1593,14 @@ mod tests {
         assert_eq!(substitute_item_value("name={VALUE}", &vars), "name=hello");
         assert_eq!(substitute_item_value("name:={VALUE}", &vars), "name:=hello");
         assert_eq!(substitute_item_value("q=={VALUE}", &vars), "q==hello");
-        assert_eq!(substitute_item_value("Header:{VALUE}", &vars), "Header:hello");
-        assert_eq!(substitute_item_value("data=@{PATH}", &vars), "data=@fixtures/payload.json");
+        assert_eq!(
+            substitute_item_value("Header:{VALUE}", &vars),
+            "Header:hello"
+        );
+        assert_eq!(
+            substitute_item_value("data=@{PATH}", &vars),
+            "data=@fixtures/payload.json"
+        );
         assert_eq!(
             substitute_item_value("payload:=@{PATH}", &vars),
             "payload:=@fixtures/payload.json"
@@ -1614,7 +1627,12 @@ mod tests {
 
         let mut zero_args = parse_args(&["zapreq", "GET", "https://example.com", "--download"]);
         zero_args.continue_download = true;
-        zero_args.output = Some(dir.path().join("missing.bin").to_string_lossy().into_owned());
+        zero_args.output = Some(
+            dir.path()
+                .join("missing.bin")
+                .to_string_lossy()
+                .into_owned(),
+        );
         let mut zero_items = Vec::new();
         append_resume_range_header(&zero_args, &mut zero_items);
         assert!(zero_items.is_empty());
@@ -1678,7 +1696,10 @@ mod tests {
         assert_eq!(final_status_code(&args, 503), 1);
         assert_eq!(final_status_code(&args, 200), 0);
         assert_eq!(infer_ssl_label("http://example.com", None), "none");
-        assert_eq!(infer_ssl_label("https://example.com", Some("tls1.3")), "TLS1.3");
+        assert_eq!(
+            infer_ssl_label("https://example.com", Some("tls1.3")),
+            "TLS1.3"
+        );
         assert_eq!(infer_ssl_label("https://example.com", None), "TLS(auto)");
     }
 }
