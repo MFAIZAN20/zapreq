@@ -70,6 +70,12 @@ pub fn config_root_dir() -> Result<PathBuf> {
             return Ok(PathBuf::from(trimmed));
         }
     }
+    if let Ok(current_dir) = std::env::current_dir() {
+        let local_dir = current_dir.join(".zapreq");
+        if local_dir.is_dir() {
+            return Ok(local_dir);
+        }
+    }
     let config_root = dirs::config_dir().context("could not resolve user config directory")?;
     Ok(config_root.join("zapreq"))
 }
@@ -105,7 +111,14 @@ pub fn load_profile(name: &str) -> Result<EnvProfile> {
 pub fn apply_profile(profile: &EnvProfile, cli: &mut CliResolved) {
     if let Some(base_url) = &profile.base_url {
         let trimmed_base = base_url.trim_end_matches('/');
-        let is_absolute = cli.url.starts_with("http://") || cli.url.starts_with("https://");
+        cli.variables
+            .entry("base_url".to_string())
+            .or_insert_with(|| trimmed_base.to_string());
+
+        let is_absolute = cli.url.starts_with("http://")
+            || cli.url.starts_with("https://")
+            || cli.url.starts_with("{{")
+            || cli.url.starts_with('{');
         if !cli.url.is_empty() && !is_absolute {
             let relative = cli.url.trim_start_matches('/');
             cli.url = format!("{trimmed_base}/{relative}");

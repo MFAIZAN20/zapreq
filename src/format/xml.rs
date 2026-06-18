@@ -27,6 +27,9 @@ pub fn format_xml(raw: &str, theme: &Theme) -> String {
     }
 
     let formatted = String::from_utf8(out).unwrap_or_else(|_| raw.to_string());
+    if !theme.use_color {
+        return formatted;
+    }
     if !atty::is(atty::Stream::Stdout) {
         return formatted;
     }

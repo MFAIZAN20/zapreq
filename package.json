@@ -1,0 +1,9 @@
+{
+  "name": "zapreq-root",
+  "private": true,
+  "scripts": {
+    "tauri": "npm --prefix frontend run tauri",
+    "dev": "npm --prefix frontend run tauri dev",
+    "build": "npm --prefix frontend run tauri build"
+  }
+}

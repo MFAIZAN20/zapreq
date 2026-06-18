@@ -22,9 +22,9 @@ pub fn format_json(value: &Value, theme: &Theme, indent: usize, truncate: bool) 
 
 fn render(value: &Value, theme: &Theme, level: usize, step: usize, truncate: bool) -> String {
     match value {
-        Value::Null => paint("null", theme.json_null),
-        Value::Bool(v) => paint(&v.to_string(), theme.json_bool),
-        Value::Number(v) => paint(&v.to_string(), theme.json_number),
+        Value::Null => paint("null", theme.json_null, theme.use_color),
+        Value::Bool(v) => paint(&v.to_string(), theme.json_bool, theme.use_color),
+        Value::Number(v) => paint(&v.to_string(), theme.json_number, theme.use_color),
         Value::String(v) => {
             let shown = if truncate && v.chars().count() > 200 {
                 format!("{}…", v.chars().take(200).collect::<String>())
@@ -32,37 +32,37 @@ fn render(value: &Value, theme: &Theme, level: usize, step: usize, truncate: boo
                 v.clone()
             };
             let quoted = serde_json::to_string(&shown).unwrap_or_else(|_| format!("\"{shown}\""));
-            paint(&quoted, theme.json_string)
+            paint(&quoted, theme.json_string, theme.use_color)
         }
         Value::Array(arr) => render_array(arr, theme, level, step, truncate),
         Value::Object(map) => {
             if map.is_empty() {
                 return format!(
                     "{}{}",
-                    paint("{", theme.json_brace),
-                    paint("}", theme.json_brace)
+                    paint("{", theme.json_brace, theme.use_color),
+                    paint("}", theme.json_brace, theme.use_color)
                 );
             }
 
             let mut out = String::new();
-            out.push_str(&paint("{", theme.json_brace));
+            out.push_str(&paint("{", theme.json_brace, theme.use_color));
             out.push('\n');
 
             let mut iter = map.iter().peekable();
             while let Some((k, v)) = iter.next() {
                 out.push_str(&" ".repeat((level + 1) * step));
                 let key = serde_json::to_string(k).unwrap_or_else(|_| format!("\"{k}\""));
-                out.push_str(&paint(&key, theme.json_key));
-                out.push_str(&paint(": ", theme.json_brace));
+                out.push_str(&paint(&key, theme.json_key, theme.use_color));
+                out.push_str(&paint(": ", theme.json_brace, theme.use_color));
                 out.push_str(&render(v, theme, level + 1, step, truncate));
                 if iter.peek().is_some() {
-                    out.push_str(&paint(",", theme.json_brace));
+                    out.push_str(&paint(",", theme.json_brace, theme.use_color));
                 }
                 out.push('\n');
             }
 
             out.push_str(&" ".repeat(level * step));
-            out.push_str(&paint("}", theme.json_brace));
+            out.push_str(&paint("}", theme.json_brace, theme.use_color));
             out
         }
     }
@@ -78,30 +78,34 @@ fn render_array(
     if values.is_empty() {
         return format!(
             "{}{}",
-            paint("[", theme.json_brace),
-            paint("]", theme.json_brace)
+            paint("[", theme.json_brace, theme.use_color),
+            paint("]", theme.json_brace, theme.use_color)
         );
     }
 
     let mut out = String::new();
-    out.push_str(&paint("[", theme.json_brace));
+    out.push_str(&paint("[", theme.json_brace, theme.use_color));
     out.push('\n');
     let mut iter = values.iter().peekable();
     while let Some(v) = iter.next() {
         out.push_str(&" ".repeat((level + 1) * step));
         out.push_str(&render(v, theme, level + 1, step, truncate));
         if iter.peek().is_some() {
-            out.push_str(&paint(",", theme.json_brace));
+            out.push_str(&paint(",", theme.json_brace, theme.use_color));
         }
         out.push('\n');
     }
     out.push_str(&" ".repeat(level * step));
-    out.push_str(&paint("]", theme.json_brace));
+    out.push_str(&paint("]", theme.json_brace, theme.use_color));
     out
 }
 
-fn paint(value: &str, color: colored::Color) -> String {
-    value.color(color).to_string()
+fn paint(value: &str, color: colored::Color, use_color: bool) -> String {
+    if use_color {
+        value.color(color).to_string()
+    } else {
+        value.to_string()
+    }
 }
 
 fn truncate_value(value: &Value, limit: usize) -> Value {

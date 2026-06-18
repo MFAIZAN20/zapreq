@@ -1,0 +1,12 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=ZapReq
+GenericName=API Client
+Comment=Native desktop API client for building and sending HTTP requests
+Exec=zapreq gui
+Icon=zapreq
+Terminal=false
+Categories=Development;Network;
+Keywords=api;http;rest;client;request;
+StartupNotify=true

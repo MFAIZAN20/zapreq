@@ -202,7 +202,7 @@ pub fn run_advanced_tui(config: &Config) -> Result<()> {
     let (workspace_order, workspace_labels, request_map) = load_sources()?;
     if workspace_order.is_empty() {
         println!(
-            "No workspaces or legacy requests found. Use `http requests save ...` or `http save ...` first."
+            "No workspaces or legacy requests found. Use `zapreq requests save ...` or `zapreq save ...` first."
         );
         return Ok(());
     }
@@ -650,7 +650,7 @@ fn execute_request_from_tui(
         items: parsed_items,
     };
 
-    let mut synthetic = vec!["http".to_string(), req.method.clone(), usable_url.clone()];
+    let mut synthetic = vec!["zapreq".to_string(), req.method.clone(), usable_url.clone()];
     synthetic.extend(resolved_items);
     merge_defaults(config, &mut synthetic);
     let mut args: CliArgs =
@@ -663,6 +663,20 @@ fn execute_request_from_tui(
         .send(&args, &spec, None)
         .context("request execution failed")?;
     let elapsed_ms = started.elapsed().as_millis() as u64;
+
+    let _ = crate::localdb::record_http_report(
+        "TUI",
+        &trace.method,
+        &trace.url,
+        &response.final_url,
+        response.status_code,
+        &response.reason,
+        elapsed_ms,
+        response.body.len(),
+        response.content_type.as_deref(),
+        &response.headers,
+        &String::from_utf8_lossy(&response.body),
+    );
 
     let headers = response
         .headers
@@ -732,9 +746,13 @@ fn substitute_placeholders(input: &str, vars: &HashMap<String, String>) -> Strin
             .or_else(|| caps.get(2))
             .map(|m| m.as_str())
             .unwrap_or_default();
-        vars.get(key)
-            .cloned()
-            .unwrap_or_else(|| caps[0].to_string())
+        if let Some(val) = vars.get(key) {
+            val.clone()
+        } else if let Ok(Some(secret_val)) = crate::secrets::get_secret(key) {
+            secret_val
+        } else {
+            caps[0].to_string()
+        }
     })
     .into_owned()
 }

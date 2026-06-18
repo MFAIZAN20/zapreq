@@ -1,0 +1,58 @@
+{
+  "info": {
+    "name": "fiazan1",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "Request 8493",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "https://httpbin.org/get"
+        }
+      }
+    },
+    {
+      "name": "Request 1286",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "https://httpbin.org/get"
+        }
+      }
+    },
+    {
+      "name": "Request 2870",
+      "request": {
+        "method": "DELETE",
+        "header": [],
+        "url": {
+          "raw": "https://httpbin.org/get"
+        }
+      }
+    },
+    {
+      "name": "Request 4097",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "https://httpbin.org/get"
+        }
+      }
+    },
+    {
+      "name": "Request 5973",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "https://httpbin.org/get"
+        }
+      }
+    }
+  ]
+}

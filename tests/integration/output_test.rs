@@ -3,7 +3,7 @@ use assert_cmd::Command;
 use tempfile::TempDir;
 
 fn zapreq(config_dir: &TempDir) -> Command {
-    let mut cmd = Command::cargo_bin("http").expect("binary should build");
+    let mut cmd = Command::cargo_bin("zapreq").expect("binary should build");
     cmd.env("ZAPREQ_CONFIG_DIR", config_dir.path());
     cmd
 }
