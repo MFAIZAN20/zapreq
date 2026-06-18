@@ -4,7 +4,7 @@ import {
   HelpCircle, Database, RefreshCw, 
   SlidersHorizontal, AlertCircle, 
   Terminal, ShieldCheck, Heart, CheckCircle2,
-  Edit, Copy, Key, ChevronDown, ChevronRight, Folder, FolderPlus
+  Edit, Key, ChevronDown, ChevronRight, Folder, FolderPlus, Check, TerminalSquare
 } from 'lucide-react';
 
 // Tauri API Bridge import with mock fallback
@@ -783,6 +783,95 @@ function decodeHtmlEntities(value: string) {
   return textarea.value;
 }
 
+function extractHtmlTagContent(html: string, tagName: string): string {
+  const tagLower = `<${tagName}`;
+  const startIdx = html.toLowerCase().indexOf(tagLower);
+  if (startIdx === -1) return '';
+  const closeBracket = html.indexOf('>', startIdx);
+  if (closeBracket === -1) return '';
+  const endTag = `</${tagName}>`;
+  const endIdx = html.toLowerCase().indexOf(endTag, closeBracket);
+  if (endIdx === -1) return '';
+  return html.substring(closeBracket + 1, endIdx);
+}
+
+function stripHtmlTagContent(html: string, tagName: string): string {
+  let result = html;
+  const tagLower = `<${tagName}`;
+  const endTag = `</${tagName}>`;
+  const endTagLen = endTag.length;
+  
+  while (true) {
+    const startIdx = result.toLowerCase().indexOf(tagLower);
+    if (startIdx === -1) break;
+    const endIdx = result.toLowerCase().indexOf(endTag, startIdx);
+    if (endIdx === -1) {
+      result = result.substring(0, startIdx);
+      break;
+    }
+    result = result.substring(0, startIdx) + result.substring(endIdx + endTagLen);
+  }
+  return result;
+}
+
+function stripAllHtmlTags(html: string): string {
+  let textCleaned = '';
+  let inTag = false;
+  for (const char of html) {
+    if (char === '<') {
+      inTag = true;
+    } else if (char === '>') {
+      inTag = false;
+      textCleaned += ' ';
+    } else if (!inTag) {
+      textCleaned += char;
+    }
+  }
+  return textCleaned;
+}
+
+function cleanHtmlResponse(bodyText: string, status: number, reason: string): string {
+  const titleText = extractHtmlTagContent(bodyText, 'title');
+  const headingText = extractHtmlTagContent(bodyText, 'h1');
+  const rawTitle = headingText || titleText || '';
+  
+  let titleCleaned = '';
+  let inTitleTag = false;
+  for (const char of rawTitle) {
+    if (char === '<') {
+      inTitleTag = true;
+    } else if (char === '>') {
+      inTitleTag = false;
+    } else if (!inTitleTag) {
+      titleCleaned += char;
+    }
+  }
+  const title = decodeHtmlEntities(titleCleaned.trim());
+
+  let cleanText = stripHtmlTagContent(bodyText, 'script');
+  cleanText = stripHtmlTagContent(cleanText, 'style');
+
+  cleanText = cleanText.replace(/<\/(?:p|div|h[1-6]|li|tr|br)>/gi, '\n');
+
+  const strippedText = stripAllHtmlTags(cleanText);
+
+  const text = decodeHtmlEntities(
+    strippedText
+      .replace(/[ \t]+/g, ' ')
+      .replace(/\n\s+/g, '\n')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim()
+  );
+
+  const summary = [
+    `HTTP ${status} ${reason}`,
+    title && title !== `${status} ${reason}` ? title : '',
+    text
+  ].filter(Boolean);
+
+  return summary.join('\n\n') || `HTTP ${status} ${reason}`;
+}
+
 function formatResponseBody(response: ResponseDto) {
   if (response.body_is_base64) {
     return 'Binary response body is base64 encoded. Use the Raw tab to inspect the encoded payload.';
@@ -797,90 +886,7 @@ function formatResponseBody(response: ResponseDto) {
   }
 
   if (isHtmlResponse(response)) {
-    const extractTag = (tagName: string): string => {
-      const tagLower = `<${tagName}`;
-      const startIdx = response.body.toLowerCase().indexOf(tagLower);
-      if (startIdx === -1) return '';
-      const closeBracket = response.body.indexOf('>', startIdx);
-      if (closeBracket === -1) return '';
-      const endTag = `</${tagName}>`;
-      const endIdx = response.body.toLowerCase().indexOf(endTag, closeBracket);
-      if (endIdx === -1) return '';
-      return response.body.substring(closeBracket + 1, endIdx);
-    };
-
-    const titleText = extractTag('title');
-    const headingText = extractTag('h1');
-    const rawTitle = headingText || titleText || '';
-    
-    let titleCleaned = '';
-    let inTitleTag = false;
-    for (let i = 0; i < rawTitle.length; i++) {
-      const char = rawTitle[i];
-      if (char === '<') {
-        inTitleTag = true;
-      } else if (char === '>') {
-        inTitleTag = false;
-      } else if (!inTitleTag) {
-        titleCleaned += char;
-      }
-    }
-    const title = decodeHtmlEntities(titleCleaned.trim());
-
-    let bodyText = response.body;
-    while (true) {
-      const startIdx = bodyText.toLowerCase().indexOf('<script');
-      if (startIdx === -1) break;
-      const endIdx = bodyText.toLowerCase().indexOf('</script>', startIdx);
-      if (endIdx === -1) {
-        bodyText = bodyText.substring(0, startIdx);
-        break;
-      }
-      bodyText = bodyText.substring(0, startIdx) + bodyText.substring(endIdx + 9);
-    }
-
-    while (true) {
-      const startIdx = bodyText.toLowerCase().indexOf('<style');
-      if (startIdx === -1) break;
-      const endIdx = bodyText.toLowerCase().indexOf('</style>', startIdx);
-      if (endIdx === -1) {
-        bodyText = bodyText.substring(0, startIdx);
-        break;
-      }
-      bodyText = bodyText.substring(0, startIdx) + bodyText.substring(endIdx + 8);
-    }
-
-    bodyText = bodyText.replace(/<\/(?:p|div|h[1-6]|li|tr|br)>/gi, '\n');
-
-    let textCleaned = '';
-    let inBodyTag = false;
-    for (let i = 0; i < bodyText.length; i++) {
-      const char = bodyText[i];
-      if (char === '<') {
-        inBodyTag = true;
-      } else if (char === '>') {
-        inBodyTag = false;
-        textCleaned += ' ';
-      } else if (!inBodyTag) {
-        textCleaned += char;
-      }
-    }
-
-    const text = decodeHtmlEntities(
-      textCleaned
-        .replace(/[ \t]+/g, ' ')
-        .replace(/\n\s+/g, '\n')
-        .replace(/\n{3,}/g, '\n\n')
-        .trim()
-    );
-
-    const summary = [
-      `HTTP ${response.status} ${response.reason}`,
-      title && title !== `${response.status} ${response.reason}` ? title : '',
-      text
-    ].filter(Boolean);
-
-    return summary.join('\n\n') || `HTTP ${response.status} ${response.reason}`;
+    return cleanHtmlResponse(response.body, response.status, response.reason);
   }
 
   return response.body;
@@ -919,6 +925,33 @@ function reportMeta(report: ReportDto): ReportMeta {
   };
 }
 
+function isReportPassed(rep: ReportDto): boolean {
+  const meta = reportMeta(rep);
+  if (typeof meta.status === 'number') {
+    return meta.status < 400;
+  }
+  if (rep.module === 'security') {
+    try {
+      const payload = JSON.parse(rep.payload_json);
+      return !payload.findings || payload.findings.length === 0;
+    } catch {
+      return false;
+    }
+  }
+  if (rep.module === 'performance') {
+    try {
+      const payload = JSON.parse(rep.payload_json);
+      if (payload.endpoints) {
+        return (payload.endpoints as PerformanceEndpointPayload[]).every((ep) => !ep.error_count || ep.error_count === 0);
+      }
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  return true;
+}
+
 function historyKey(method?: string, url?: string) {
   if (!method || !url) return '';
   return `${method.toUpperCase()} ${url.trim()}`;
@@ -955,8 +988,7 @@ function slugFilename(value: string) {
   let slug = '';
   let lastWasHyphen = false;
   const chars = value.trim().toLowerCase();
-  for (let i = 0; i < chars.length; i++) {
-    const char = chars[i];
+  for (const char of chars) {
     if ((char >= 'a' && char <= 'z') || (char >= '0' && char <= '9') || char === '_' || char === '-') {
       slug += char;
       lastWasHyphen = false;
@@ -3318,769 +3350,712 @@ export default function App() {
     );
   };
 
-  return (
-    <div className="app-shell">
-      {/* Top Toolbar */}
-      <header className="toolbar">
-        <div className="toolbar-left">
-          <div className="logo-container">
-            <Globe size={18} className="logo-icon" />
-            <span>ZapReq</span>
-          </div>
-
-          <div className="workspace-select-wrapper">
-            <span className="select-label">Workspace</span>
-            <select 
-              className="toolbar-select"
-              value={activeWorkspaceName}
-              onChange={(e) => {
-                if (e.target.value === 'new') {
-                  setShowCreateWorkspace(true);
-                } else {
-                  setActiveWorkspaceName(e.target.value);
-                  setActiveRequest(null);
-                }
-              }}
-            >
-              {workspaces.map(w => (
-                <option key={w.name} value={w.name}>{w.name}</option>
-              ))}
-              <option value="new">+ Create Workspace...</option>
-            </select>
-            
-            {activeWorkspaceName && (
-              <button 
-                className="icon-btn" 
-                onClick={() => {
-                  setNewWsRenameName(activeWorkspaceName);
-                  setShowRenameWorkspace(true);
-                }}
-                title="Rename Workspace"
-                style={{ padding: '6px' }}
-              >
-                <Edit size={14} />
-              </button>
-            )}
-          </div>
-
-          <div className="env-select-wrapper">
-            <span className="select-label">Env</span>
-            <select 
-              className="toolbar-select"
-              value={selectedEnv}
-              onChange={(e) => setSelectedEnv(e.target.value)}
-            >
-              <option value="none">No Environment</option>
-              {environments.map(env => (
-                <option key={env} value={env}>{env}</option>
-              ))}
-            </select>
-          </div>
+  const renderToolbar = () => (
+    <header className="toolbar">
+      <div className="toolbar-left">
+        <div className="logo-container">
+          <Globe size={18} className="logo-icon" />
+          <span>ZapReq</span>
         </div>
 
-        <div className="toolbar-right">
-          <button 
-            className="btn btn-secondary" 
-            onClick={() => setShowImportDialog(true)} 
-            style={{ padding: '6px 12px', fontSize: '13px', display: 'flex', alignItems: 'center', gap: '4px' }}
+        <div className="workspace-select-wrapper">
+          <span className="select-label">Workspace</span>
+          <select 
+            className="toolbar-select"
+            value={activeWorkspaceName}
+            onChange={(e) => {
+              if (e.target.value === 'new') {
+                setShowCreateWorkspace(true);
+              } else {
+                setActiveWorkspaceName(e.target.value);
+                setActiveRequest(null);
+              }
+            }}
           >
-            <span>Import</span>
-          </button>
-          <button 
-            className="btn btn-secondary" 
-            onClick={() => {
-              setExportFilePath(prev => prev || defaultExportFilename(activeWorkspaceName, exportFormat));
-              setShowExportDialog(true);
-            }} 
-            style={{ padding: '6px 12px', fontSize: '13px', display: 'flex', alignItems: 'center', gap: '4px' }}
-          >
-            <span>Export</span>
-          </button>
-          <button className="icon-btn" onClick={() => loadInitialData()} title="Refresh Data">
-            <RefreshCw size={16} />
-          </button>
-          <button className="icon-btn" onClick={() => setShowSettings(true)} title="App Information">
-            <HelpCircle size={16} />
-          </button>
-        </div>
-      </header>
-
-      {/* Main Workspace Body */}
-      <main className="workbench" ref={containerRef}>
-        
-        {/* Far Left Activity Bar */}
-        <nav className="activity-bar">
-          <button 
-            className={`activity-btn ${activeView === 'collections' ? 'active' : ''}`}
-            onClick={() => setActiveView('collections')}
-            title="Collections & Requests"
-          >
-            <Plus size={20} />
-          </button>
+            {workspaces.map(w => (
+              <option key={w.name} value={w.name}>{w.name}</option>
+            ))}
+            <option value="new">+ Create Workspace...</option>
+          </select>
           
-          <button 
-            className={`activity-btn ${activeView === 'tests' ? 'active' : ''}`}
-            onClick={() => setActiveView('tests')}
-            title="Regression Tests Runner"
-          >
-            <ShieldCheck size={20} />
-          </button>
+          {activeWorkspaceName && (
+            <button 
+              className="icon-btn" 
+              onClick={() => {
+                setNewWsRenameName(activeWorkspaceName);
+                setShowRenameWorkspace(true);
+              }}
+              title="Rename Workspace"
+              style={{ padding: '6px' }}
+            >
+              <Edit size={14} />
+            </button>
+          )}
+        </div>
 
-          <button 
-            className={`activity-btn ${activeView === 'reports' ? 'active' : ''}`}
-            onClick={() => setActiveView('reports')}
-            title="Execution History Reports"
+        <div className="env-select-wrapper">
+          <span className="select-label">Env</span>
+          <select 
+            className="toolbar-select"
+            value={selectedEnv}
+            onChange={(e) => setSelectedEnv(e.target.value)}
           >
-            <Database size={20} />
-          </button>
-        </nav>
+            <option value="none">No Environment</option>
+            {environments.map(env => (
+              <option key={env} value={env}>{env}</option>
+            ))}
+          </select>
+        </div>
+      </div>
 
-        {/* 1. COLLECTIONS VIEW VIEWPORTS */}
-        {activeView === 'collections' && (
+      <div className="toolbar-right">
+        <button 
+          className="btn btn-secondary" 
+          onClick={() => setShowImportDialog(true)} 
+          style={{ padding: '6px 12px', fontSize: '13px', display: 'flex', alignItems: 'center', gap: '4px' }}
+        >
+          <span>Import</span>
+        </button>
+        <button 
+          className="btn btn-secondary" 
+          onClick={() => {
+            setExportFilePath(prev => prev || defaultExportFilename(activeWorkspaceName, exportFormat));
+            setShowExportDialog(true);
+          }} 
+          style={{ padding: '6px 12px', fontSize: '13px', display: 'flex', alignItems: 'center', gap: '4px' }}
+        >
+          <span>Export</span>
+        </button>
+        <button className="icon-btn" onClick={() => loadInitialData()} title="Refresh Data">
+          <RefreshCw size={16} />
+        </button>
+        <button className="icon-btn" onClick={() => setShowSettings(true)} title="App Information">
+          <HelpCircle size={16} />
+        </button>
+      </div>
+    </header>
+  );
+
+  const renderCollectionsView = () => (
+    <>
+      <section className="sidebar" style={{ width: `${sidebarWidth}px` }}>
+        <div className="sidebar-header">
+          <span className="sidebar-title">Collections</span>
+          <div style={{ display: 'flex', gap: '4px' }}>
+            <button className="icon-btn" onClick={handleCreateRequestFolder} title="New Folder">
+              <FolderPlus size={16} />
+            </button>
+            <button className="icon-btn" onClick={handleCreateRequest} title="New Request">
+              <Plus size={16} />
+            </button>
+          </div>
+        </div>
+
+        <div className="sidebar-search">
+          <div className="search-input-wrapper">
+            <Search size={14} className="search-icon" />
+            <input 
+              type="text" 
+              placeholder="Filter requests..." 
+              className="sidebar-search-input"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+            />
+          </div>
+        </div>
+
+        <section
+          className="request-tree-container"
+          aria-label="Request collection tree and drop zone"
+          style={{
+            border: (dragOverRoot && !dragOverFolder) ? '1px dashed var(--accent-color)' : '1px solid transparent',
+            borderRadius: '4px',
+            margin: '4px',
+            backgroundColor: (dragOverRoot && !dragOverFolder) ? 'rgba(79, 70, 229, 0.05)' : undefined,
+            transition: 'all 0.15s ease'
+          }}
+          onDragOver={(e) => {
+            e.preventDefault();
+            e.dataTransfer.dropEffect = 'move';
+          }}
+          onDragEnter={(e) => {
+            e.preventDefault();
+            setDragOverRoot(true);
+          }}
+          onDragLeave={(e) => {
+            const rect = e.currentTarget.getBoundingClientRect();
+            const x = e.clientX;
+            const y = e.clientY;
+            if (x < rect.left || x >= rect.right || y < rect.top || y >= rect.bottom) {
+              setDragOverRoot(false);
+            }
+          }}
+          onDrop={(e) => {
+            e.preventDefault();
+            setDragOverRoot(false);
+            setDragOverFolder(null);
+            const reqId = e.dataTransfer.getData("requestId");
+            if (reqId) {
+              handleMoveRequestToFolder(reqId, "");
+            }
+          }}
+        >
+          {requestTree.length === 0 ? (
+            <div style={{ padding: '24px 16px', textAlign: 'center', color: 'var(--text-muted)', fontSize: '13px' }}>
+              No requests found
+            </div>
+          ) : (
+            renderRequestTree(requestTree)
+          )}
+        </section>
+
+        <div className="sidebar-footer">
+          <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+            <Database size={12} />
+            <span>{currentWorkspace?.requests.length || 0} Saved Requests</span>
+          </div>
+        </div>
+      </section>
+
+      <ResizeDivider isDragging={isResizingSidebar} onMouseDown={handleMouseDownSidebar} label="Resize collections sidebar" />
+
+      <section className="request-pane">
+        {activeRequest ? (
           <>
-            {/* Left Sidebar */}
-            <section className="sidebar" style={{ width: `${sidebarWidth}px` }}>
-              <div className="sidebar-header">
-                <span className="sidebar-title">Collections</span>
-                <div style={{ display: 'flex', gap: '4px' }}>
-                  <button className="icon-btn" onClick={handleCreateRequestFolder} title="New Folder">
-                    <FolderPlus size={16} />
+            <div className="request-header">
+              <div className="request-title-row">
+                <input 
+                  type="text" 
+                  className="request-title-input" 
+                  value={requestName}
+                  onChange={(e) => setRequestName(e.target.value)}
+                  onBlur={handleSaveRequest}
+                  style={{ flex: 1, minWidth: 0 }}
+                />
+                <div style={{ display: 'flex', gap: '8px', flexShrink: 0, alignItems: 'center' }}>
+                  <button 
+                    className="btn btn-secondary" 
+                    onClick={() => {
+                      setTestSuiteName("");
+                      setTestCaseName(requestName);
+                      setExpectStatus(response ? String(response.status) : "200");
+                      setExpectMaxTime(response ? String(response.elapsed_ms || 500) : "500");
+                      setExpectContains("");
+                      setSelectedRequestForTestCaseId(activeRequest?.id || "custom");
+                      setTcRequestMethod(requestMethod);
+                      setTcRequestUrl(requestUrl);
+                      setTcRequestItems(buildRequestItems(queryParams, headers, bodyFields, authType, authToken));
+                      setShowAddTestDialog(true);
+                    }} 
+                    style={{ display: 'flex', alignItems: 'center', gap: '4px', whiteSpace: 'nowrap' }}
+                    title="Add this request to a regression test suite"
+                  >
+                    <ShieldCheck size={14} />
+                    <span>Generate Test</span>
                   </button>
-                  <button className="icon-btn" onClick={handleCreateRequest} title="New Request">
-                    <Plus size={16} />
-                  </button>
+                  <button className="btn btn-secondary" onClick={handleSaveRequest} style={{ whiteSpace: 'nowrap' }}>Save</button>
                 </div>
               </div>
 
-              <div className="sidebar-search">
-                <div className="search-input-wrapper">
-                  <Search size={14} className="search-icon" />
-                  <input 
-                    type="text" 
-                    placeholder="Filter requests..." 
-                    className="sidebar-search-input"
-                    value={searchQuery}
-                    onChange={(e) => setSearchQuery(e.target.value)}
+              <div className="request-url-row">
+                <select 
+                  className="method-select" 
+                  value={requestMethod} 
+                  onChange={(e) => setRequestMethod(e.target.value)}
+                  style={{ cursor: 'pointer' }}
+                >
+                  <option value="GET">GET</option>
+                  <option value="POST">POST</option>
+                  <option value="PUT">PUT</option>
+                  <option value="DELETE">DELETE</option>
+                  <option value="PATCH">PATCH</option>
+                </select>
+                <input 
+                  type="text" 
+                  className="url-input" 
+                  placeholder="https://api.example.com/endpoint" 
+                  value={requestUrl}
+                  onChange={(e) => handleUrlChange(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter') handleSendRequest(); }}
+                />
+                <button className="send-btn" onClick={handleSendRequest} disabled={isLoading}>
+                  {isLoading ? (
+                    <>
+                      <RefreshCw size={14} className="animate-spin" />
+                      <span>Sending...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Play size={14} fill="white" />
+                      <span>Execute</span>
+                    </>
+                  )}
+                </button>
+                <button className="send-btn btn-secondary" onClick={handleCopyAsCurl} style={{ width: '42px', padding: 0, justifyContent: 'center', backgroundColor: 'var(--bg-secondary)', border: '1px solid var(--border-color)', color: 'var(--text-secondary)' }} title="Copy Request as cURL command">
+                  {copiedCurl ? <Check size={14} style={{ color: 'var(--color-get)' }} /> : <TerminalSquare size={14} />}
+                </button>
+              </div>
+
+              <div className="tabs-row">
+                <button className={`tab-btn ${requestTab === 'params' ? 'active' : ''}`} onClick={() => setRequestTab('params')}>Params</button>
+                <button className={`tab-btn ${requestTab === 'headers' ? 'active' : ''}`} onClick={() => setRequestTab('headers')}>Headers</button>
+                <button className={`tab-btn ${requestTab === 'auth' ? 'active' : ''}`} onClick={() => setRequestTab('auth')}>Auth</button>
+                <button className={`tab-btn ${requestTab === 'body' ? 'active' : ''}`} onClick={() => setRequestTab('body')}>Body</button>
+                <button className={`tab-btn ${requestTab === 'pre-request' ? 'active' : ''}`} onClick={() => setRequestTab('pre-request')}>Pre-request</button>
+                <button className={`tab-btn ${requestTab === 'tests' ? 'active' : ''}`} onClick={() => setRequestTab('tests')}>Tests</button>
+              </div>
+            </div>
+
+            <div className="tab-content-wrapper">
+              {requestTab === 'params' && (
+                <div className="params-table">
+                  <div className="table-header">
+                    <div style={{ flex: 1.2 }}>Query Param Key</div>
+                    <div style={{ flex: 1.8 }}>Value</div>
+                    <div style={{ width: '38px', textAlign: 'center' }}>Use</div>
+                    <div style={{ width: '32px' }}></div>
+                  </div>
+                  <div className="table-body">
+                    {queryParams.map((param, idx) => (
+                      <div key={param.id} className="table-row">
+                        <input type="text" className="kv-input" placeholder="key" value={param.key} onChange={(e) => updateQueryParam(idx, 'key', e.target.value)} />
+                        <input type="text" className="kv-input" placeholder="value" value={param.value} onChange={(e) => updateQueryParam(idx, 'value', e.target.value)} />
+                        <div style={{ width: '38px', display: 'flex', justifyContent: 'center' }}>
+                          <input type="checkbox" checked={param.enabled} onChange={(e) => updateQueryParam(idx, 'enabled', e.target.checked)} style={{ cursor: 'pointer' }} />
+                        </div>
+                        <button className="icon-btn" onClick={() => deleteQueryParam(idx)}><Trash size={14} /></button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {requestTab === 'headers' && (
+                <div className="params-table">
+                  <div className="table-header">
+                    <div style={{ flex: 1.2 }}>HTTP Header Key</div>
+                    <div style={{ flex: 1.8 }}>Value</div>
+                    <div style={{ width: '38px', textAlign: 'center' }}>Use</div>
+                    <div style={{ width: '32px' }}></div>
+                  </div>
+                  <div className="table-body">
+                    {headers.map((h, idx) => (
+                      <div key={h.id} className="table-row">
+                        <input type="text" className="kv-input" placeholder="key" value={h.key} onChange={(e) => updateHeader(idx, 'key', e.target.value)} />
+                        <input type="text" className="kv-input" placeholder="value" value={h.value} onChange={(e) => updateHeader(idx, 'value', e.target.value)} />
+                        <div style={{ width: '38px', display: 'flex', justifyContent: 'center' }}>
+                          <input type="checkbox" checked={h.enabled} onChange={(e) => updateHeader(idx, 'enabled', e.target.checked)} style={{ cursor: 'pointer' }} />
+                        </div>
+                        <button className="icon-btn" onClick={() => deleteHeader(idx)}><Trash size={14} /></button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {requestTab === 'auth' && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '16px', padding: '12px' }}>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                    <label htmlFor="auth-type-select" style={{ fontSize: '13px', fontWeight: '600', color: 'var(--text-secondary)' }}>Authentication Strategy</label>
+                    <select id="auth-type-select" className="toolbar-select" value={authType} onChange={(e) => setAuthType(e.target.value)} style={{ width: '240px', cursor: 'pointer' }}>
+                      <option value="none">No Auth</option>
+                      <option value="bearer">Bearer Token</option>
+                      <option value="basic">Basic Auth</option>
+                      <option value="digest">Digest Access Auth</option>
+                    </select>
+                  </div>
+
+                  {authType !== 'none' && (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', maxWidth: '380px' }}>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                        <label htmlFor="auth-token-input" style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
+                          {authType === 'bearer' ? 'Bearer Access Token' : 'Credentials Username / Password (colon separated)'}
+                        </label>
+                        <input 
+                          id="auth-token-input"
+                          type="password" 
+                          className="kv-input" 
+                          placeholder={authType === 'bearer' ? 'token...' : 'username:password'} 
+                          value={authToken} 
+                          onChange={(e) => setAuthToken(e.target.value)} 
+                        />
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {requestTab === 'body' && (
+                <div className="params-table">
+                  <div className="table-header">
+                    <div style={{ flex: 1.2 }}>Payload Property Key</div>
+                    <div style={{ flex: 1.4 }}>Value</div>
+                    <div style={{ width: '70px', textAlign: 'center' }}>Type</div>
+                    <div style={{ width: '38px', textAlign: 'center' }}>Use</div>
+                    <div style={{ width: '32px' }}></div>
+                  </div>
+                  <div className="table-body">
+                    {bodyFields.map((field, idx) => (
+                      <div key={field.id} className="table-row">
+                        <input type="text" className="kv-input" placeholder="key" value={field.key} onChange={(e) => updateBodyField(idx, 'key', e.target.value)} />
+                        <input type="text" className="kv-input" placeholder="value" value={field.value} onChange={(e) => updateBodyField(idx, 'value', e.target.value)} />
+                        <select className="toolbar-select" value={field.type} onChange={(e) => updateBodyField(idx, 'type', e.target.value as BodyRow['type'])} style={{ width: '70px', padding: '2px', cursor: 'pointer' }}>
+                          <option value="string">Text</option>
+                          <option value="json">JSON</option>
+                        </select>
+                        <div style={{ width: '38px', display: 'flex', justifyContent: 'center' }}>
+                          <input type="checkbox" checked={field.enabled} onChange={(e) => updateBodyField(idx, 'enabled', e.target.checked)} style={{ cursor: 'pointer' }} />
+                        </div>
+                        <button className="icon-btn" onClick={() => deleteBodyField(idx)}><Trash size={14} /></button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {requestTab === 'pre-request' && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', padding: '12px', height: '100%' }}>
+                  <label htmlFor="pre-req-script" style={{ fontSize: '13px', fontWeight: '600', color: 'var(--text-secondary)' }}>Pre-request Event script (JavaScript / Rhai)</label>
+                  <textarea 
+                    id="pre-req-script"
+                    className="editor-textarea" 
+                    placeholder="// Perform actions before request is sent... e.g. set global headers or secrets" 
+                    value={preRequestScript} 
+                    onChange={(e) => setPreRequestScript(e.target.value)}
                   />
                 </div>
-              </div>
+              )}
 
-              <section
-                className="request-tree-container"
-                aria-label="Request collection tree and drop zone"
-                style={{
-                  border: (dragOverRoot && !dragOverFolder) ? '1px dashed var(--accent-color)' : '1px solid transparent',
-                  borderRadius: '4px',
-                  margin: '4px',
-                  backgroundColor: (dragOverRoot && !dragOverFolder) ? 'rgba(79, 70, 229, 0.05)' : undefined,
-                  transition: 'all 0.15s ease'
-                }}
-                onDragOver={(e) => {
-                  e.preventDefault();
-                  e.dataTransfer.dropEffect = 'move';
-                }}
-                onDragEnter={(e) => {
-                  e.preventDefault();
-                  setDragOverRoot(true);
-                }}
-                onDragLeave={(e) => {
-                  const rect = e.currentTarget.getBoundingClientRect();
-                  const x = e.clientX;
-                  const y = e.clientY;
-                  if (x < rect.left || x >= rect.right || y < rect.top || y >= rect.bottom) {
-                    setDragOverRoot(false);
-                  }
-                }}
-                onDrop={(e) => {
-                  e.preventDefault();
-                  setDragOverRoot(false);
-                  setDragOverFolder(null);
-                  const reqId = e.dataTransfer.getData("requestId");
-                  if (reqId) {
-                    handleMoveRequestToFolder(reqId, "");
-                  }
-                }}
-              >
-                {requestTree.length === 0 ? (
-                  <div style={{ padding: '24px 16px', textAlign: 'center', color: 'var(--text-muted)', fontSize: '13px' }}>
-                    No requests found
-                  </div>
-                ) : (
-                  renderRequestTree(requestTree)
-                )}
-              </section>
-
-              <div className="sidebar-footer">
-                <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                  <Database size={12} />
-                  <span>{currentWorkspace?.requests.length || 0} Saved Requests</span>
-                </div>
-              </div>
-            </section>
-
-            <ResizeDivider isDragging={isResizingSidebar} onMouseDown={handleMouseDownSidebar} label="Resize collections sidebar" />
-
-            {/* Center Request Editor */}
-            <section className="request-pane">
-              {activeRequest ? (
-                <>
-                  <div className="request-header">
-                    <div className="request-title-row">
-                      <input 
-                        type="text" 
-                        className="request-title-input" 
-                        value={requestName}
-                        onChange={(e) => setRequestName(e.target.value)}
-                        onBlur={handleSaveRequest}
-                        style={{ flex: 1, minWidth: 0 }}
-                      />
-                      <div style={{ display: 'flex', gap: '8px', flexShrink: 0, alignItems: 'center' }}>
-                        <button 
-                          className="btn btn-secondary" 
-                          onClick={() => {
-                            setTestSuiteName("");
-                            setTestCaseName(requestName);
-                            setExpectStatus(response ? String(response.status) : "200");
-                            setExpectMaxTime(response ? String(response.elapsed_ms || 500) : "500");
-                            setExpectContains("");
-                            setSelectedRequestForTestCaseId(activeRequest?.id || "custom");
-                            setTcRequestMethod(requestMethod);
-                            setTcRequestUrl(requestUrl);
-                            setTcRequestItems(buildRequestItems(queryParams, headers, bodyFields, authType, authToken));
-                            setShowAddTestDialog(true);
-                          }} 
-                          style={{ display: 'flex', alignItems: 'center', gap: '4px', whiteSpace: 'nowrap' }}
-                          title="Add this request to a regression test suite"
-                        >
-                          <ShieldCheck size={14} />
-                          <span>Create Test Case</span>
-                        </button>
-                        <button className="btn btn-secondary" onClick={handleSaveRequest} style={{ whiteSpace: 'nowrap' }}>
-                          Save Changes
-                        </button>
-                      </div>
-                    </div>
-
-                    <div className="request-url-row">
-                      <select 
-                        className="method-select"
-                        value={requestMethod}
-                        onChange={(e) => setRequestMethod(e.target.value)}
-                      >
-                        <option value="GET">GET</option>
-                        <option value="POST">POST</option>
-                        <option value="PUT">PUT</option>
-                        <option value="DELETE">DELETE</option>
-                        <option value="PATCH">PATCH</option>
-                        <option value="OPTIONS">OPTIONS</option>
-                        <option value="HEAD">HEAD</option>
-                      </select>
-
-                      <div className="url-input-wrapper">
-                        <input 
-                          type="text" 
-                          className="url-input" 
-                          placeholder="https://api.example.com/endpoint"
-                          value={requestUrl}
-                          onChange={(e) => handleUrlChange(e.target.value)}
-                        />
-                      </div>
-
-                      <button 
-                        className="send-btn" 
-                        onClick={handleSendRequest}
-                        disabled={isLoading || !requestUrl.trim()}
-                      >
-                        {isLoading ? (
-                          <>
-                            <RefreshCw size={14} className="animate-spin" />
-                            <span>Sending...</span>
-                          </>
-                        ) : (
-                          <>
-                            <Play size={14} fill="white" />
-                            <span>Send</span>
-                          </>
-                        )}
-                      </button>
-
-                      <button 
-                        className="btn btn-secondary" 
-                        onClick={handleCopyAsCurl}
-                        title="Copy as Curl Command"
-                        style={{ display: 'flex', alignItems: 'center', gap: '4px', whiteSpace: 'nowrap', boxSizing: 'border-box' }}
-                      >
-                        <Copy size={14} />
-                        <span>{copiedCurl ? "Copied!" : "Curl"}</span>
-                      </button>
-                    </div>
-                  </div>
-
-                  <div className="tabs-row">
-                    <button className={`tab-btn ${requestTab === 'params' ? 'active' : ''}`} onClick={() => setRequestTab('params')}>Params</button>
-                    <button className={`tab-btn ${requestTab === 'headers' ? 'active' : ''}`} onClick={() => setRequestTab('headers')}>Headers</button>
-                    <button className={`tab-btn ${requestTab === 'auth' ? 'active' : ''}`} onClick={() => setRequestTab('auth')}>Auth</button>
-                    <button className={`tab-btn ${requestTab === 'body' ? 'active' : ''}`} onClick={() => setRequestTab('body')}>Body</button>
-                    <button className={`tab-btn ${requestTab === 'pre-request' ? 'active' : ''}`} onClick={() => setRequestTab('pre-request')}>Pre-request</button>
-                    <button className={`tab-btn ${requestTab === 'tests' ? 'active' : ''}`} onClick={() => setRequestTab('tests')}>Tests</button>
-                  </div>
-
-                  <div className="tab-content">
-                    {requestTab === 'params' && (
-                      <div className="kv-table-container">
-                        <div className="kv-header">
-                          <span>Parameter Key</span>
-                          <span>Value</span>
-                          <span></span>
-                        </div>
-                        {queryParams.map((row, idx) => (
-                          <div key={row.id} className="kv-row">
-                            <input type="text" placeholder="key" className="kv-input" value={row.key} onChange={(e) => updateQueryParam(idx, 'key', e.target.value)} />
-                            <input type="text" placeholder="value" className="kv-input" value={row.value} onChange={(e) => updateQueryParam(idx, 'value', e.target.value)} />
-                            <button className="icon-btn" onClick={() => deleteQueryParam(idx)}><Trash size={14} /></button>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-
-                    {requestTab === 'headers' && (
-                      <div className="kv-table-container">
-                        <div className="kv-header">
-                          <span>Header Key</span>
-                          <span>Value</span>
-                          <span></span>
-                        </div>
-                        {headers.map((row, idx) => (
-                          <div key={row.id} className="kv-row">
-                            <input type="text" placeholder="key" className="kv-input" value={row.key} onChange={(e) => updateHeader(idx, 'key', e.target.value)} />
-                            <input type="text" placeholder="value" className="kv-input" value={row.value} onChange={(e) => updateHeader(idx, 'value', e.target.value)} />
-                            <button className="icon-btn" onClick={() => deleteHeader(idx)}><Trash size={14} /></button>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-
-                    {requestTab === 'auth' && (
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                          <label htmlFor="auth-type-select" style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>Auth Type</label>
-                          <select id="auth-type-select" className="toolbar-select" value={authType} onChange={(e) => setAuthType(e.target.value)} style={{ width: '220px' }}>
-                            <option value="none">No Authentication</option>
-                            <option value="bearer">Bearer Token</option>
-                          </select>
-                        </div>
-                        {authType === 'bearer' && (
-                          <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                            <label htmlFor="auth-token-input" style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>Token</label>
-                            <input id="auth-token-input" type="password" className="kv-input" placeholder="secret_token_values" value={authToken} onChange={(e) => setAuthToken(e.target.value)} style={{ width: '360px' }} />
-                          </div>
-                        )}
-                      </div>
-                    )}
-
-                    {requestTab === 'body' && (
-                      <div className="kv-table-container">
-                        <div className="kv-header" style={{ gridTemplateColumns: '1.2fr 1.5fr 80px 40px' }}>
-                          <span>Field Key</span>
-                          <span>Value</span>
-                          <span>Type</span>
-                          <span></span>
-                        </div>
-                        {bodyFields.map((row, idx) => (
-                          <div key={row.id} className="kv-row" style={{ gridTemplateColumns: '1.2fr 1.5fr 80px 40px' }}>
-                            <input type="text" placeholder="key" className="kv-input" value={row.key} onChange={(e) => updateBodyField(idx, 'key', e.target.value)} />
-                            <input type="text" placeholder="value" className="kv-input" value={row.value} onChange={(e) => updateBodyField(idx, 'value', e.target.value)} />
-                            <select className="toolbar-select" value={row.type} onChange={(e) => updateBodyField(idx, 'type', e.target.value as BodyRow['type'])} style={{ minWidth: 'auto', padding: '6px 8px' }}>
-                              <option value="string">Text</option>
-                              <option value="json">JSON</option>
-                            </select>
-                            <button className="icon-btn" onClick={() => deleteBodyField(idx)}><Trash size={14} /></button>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-
-                    {requestTab === 'pre-request' && (
-                      <div style={{ display: 'flex', flexDirection: 'column', height: '100%', gap: '8px' }}>
-                        <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>Write JavaScript to run before sending the request. E.g., <code>pm.variables.set("token", "val");</code></span>
-                        <textarea 
-                          className="response-body-pre" 
-                          value={preRequestScript} 
-                          onChange={(e) => setPreRequestScript(e.target.value)} 
-                          placeholder="// Pre-request JavaScript code..."
-                          style={{ width: '100%', minHeight: '220px', fontFamily: 'monospace', fontSize: '13px', backgroundColor: 'var(--bg-secondary)', color: 'var(--text-primary)', border: '1px solid var(--border-color)', borderRadius: '4px', padding: '12px', resize: 'vertical' }}
-                          onBlur={handleSaveRequest}
-                        />
-                      </div>
-                    )}
-
-                    {requestTab === 'tests' && (
-                      <div style={{ display: 'flex', flexDirection: 'column', height: '100%', gap: '8px' }}>
-                        <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>Write JavaScript to execute assertions after receiving the response. E.g., <code>{"pm.test(\"Status is 200\", () => pm.expect(pm.response.code).toBe(200));"}</code></span>
-                        <textarea 
-                          className="response-body-pre" 
-                          value={postResponseScript} 
-                          onChange={(e) => setPostResponseScript(e.target.value)} 
-                          placeholder="// Test / Post-response JavaScript code..."
-                          style={{ width: '100%', minHeight: '220px', fontFamily: 'monospace', fontSize: '13px', backgroundColor: 'var(--bg-secondary)', color: 'var(--text-primary)', border: '1px solid var(--border-color)', borderRadius: '4px', padding: '12px', resize: 'vertical' }}
-                          onBlur={handleSaveRequest}
-                        />
-                      </div>
-                    )}
-                  </div>
-                </>
-              ) : (
-                <div className="response-idle-state" style={{ backgroundColor: 'var(--bg-primary)' }}>
-                  <div style={{ padding: '24px', backgroundColor: 'var(--bg-secondary)', borderRadius: '50%', border: '1px solid var(--border-color)' }}>
-                    <Terminal size={32} className="idle-icon" />
-                  </div>
-                  <h3 className="idle-title">Select a request or create a new one</h3>
-                  <p className="idle-text">Use the sidebar to pick an existing REST API request, or click the + button to create a new spec.</p>
-                  <button className="btn btn-primary" onClick={handleCreateRequest}>Create New Request</button>
+              {requestTab === 'tests' && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', padding: '12px', height: '100%' }}>
+                  <label htmlFor="post-req-script" style={{ fontSize: '13px', fontWeight: '600', color: 'var(--text-secondary)' }}>Post-response Assertions sweeps script</label>
+                  <textarea 
+                    id="post-req-script"
+                    className="editor-textarea" 
+                    placeholder="// Write test assertions sweeps... e.g. expectStatus(200); expectResponseTime(500);" 
+                    value={postResponseScript} 
+                    onChange={(e) => setPostResponseScript(e.target.value)}
+                  />
                 </div>
               )}
-            </section>
+            </div>
+          </>
+        ) : (
+          <div className="request-pane-idle">
+            <Globe size={48} className="idle-icon" />
+            <h3 className="idle-title">Select a request to start workbench</h3>
+            <p className="idle-text">Create a new API request or select an existing endpoint from your collections tree.</p>
+            <button className="btn btn-primary" onClick={handleCreateRequest}>Create New Request</button>
+          </div>
+        )}
+      </section>
 
-            <ResizeDivider isDragging={isResizingResponse} onMouseDown={handleMouseDownResponse} label="Resize response panel" />
+      <ResizeDivider isDragging={isResizingResponse} onMouseDown={handleMouseDownResponse} label="Resize response panel" />
 
-            {/* Right Response Panel */}
-            <section className="response-pane" style={{ width: `${responseWidth}px` }}>
-              <CollectionsResponsePane
-                isLoading={isLoading}
-                errorText={errorText}
-                response={response}
-                responseTab={responseTab}
-                setResponseTab={setResponseTab}
+      <section className="response-pane" style={{ width: `${responseWidth}px` }}>
+        <CollectionsResponsePane
+          isLoading={isLoading}
+          response={response}
+          errorText={errorText}
+          responseTab={responseTab}
+          setResponseTab={setResponseTab}
+        />
+      </section>
+    </>
+  );
+
+  const renderTestsView = () => (
+    <>
+      <section className="sidebar" style={{ width: `${sidebarWidth}px` }}>
+        <div className="sidebar-header">
+          <span className="sidebar-title">Test Suites</span>
+          <button 
+            className="icon-btn" 
+            onClick={() => {
+              setTestSuiteName("");
+              setTestCaseName("");
+              setExpectStatus("200");
+              setExpectMaxTime("500");
+              setExpectContains("");
+              const defaultReqId = currentWorkspace?.requests[0]?.id || "custom";
+              setSelectedRequestForTestCaseId(defaultReqId);
+              if (defaultReqId !== "custom") {
+                const req = currentWorkspace?.requests.find(r => r.id === defaultReqId);
+                setTestCaseName(req ? req.name : "");
+              }
+              setTcRequestMethod("GET");
+              setTcRequestUrl("");
+              setTcRequestItems([]);
+              setShowAddTestDialog(true);
+            }} 
+            title="Create Test Case"
+          >
+            <Plus size={16} />
+          </button>
+        </div>
+        <div className="request-tree-container">
+          <button
+            type="button"
+            className={`request-tree-item ${(!selectedTestCase && !selectedSuitePath) ? 'active' : ''}`}
+            style={{ display: 'flex', alignItems: 'center', gap: '6px', fontWeight: '600', height: '32px', marginBottom: '8px', paddingLeft: '6px' }}
+            onClick={() => {
+              setSelectedTestCase(null);
+              setSelectedSuitePath(null);
+              setSuiteReport(null);
+            }}
+          >
+            <ShieldCheck size={14} style={{ color: 'var(--accent-hover)' }} />
+            <span className="request-name" style={{ fontSize: '13px' }}>Dashboard Overview</span>
+          </button>
+          {suiteTree.length === 0 ? (
+            <div style={{ padding: '16px', textAlign: 'center', color: 'var(--text-muted)', fontSize: '12px' }}>
+              No test cases defined
+            </div>
+          ) : (
+            renderSuiteTree(suiteTree)
+          )}
+        </div>
+      </section>
+
+      <ResizeDivider isDragging={isResizingSidebar} onMouseDown={handleMouseDownSidebar} label="Resize tests sidebar" />
+
+      <section className="request-pane">
+        {!selectedTestCase && !selectedSuitePath && (
+          <div style={{ padding: '24px', display: 'flex', flexDirection: 'column', gap: '24px' }}>
+            <div>
+              <h2 style={{ fontSize: '20px', fontWeight: '700', marginBottom: '8px', color: 'var(--text-primary)' }}>Regression Testing Sweeps</h2>
+              <p style={{ color: 'var(--text-secondary)', fontSize: '13px' }}>Run automated test assertion sweeps against your saved endpoints to validate reliability.</p>
+            </div>
+            
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '16px' }}>
+              <div style={{ padding: '16px', backgroundColor: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: '8px' }}>
+                <span style={{ fontSize: '11px', color: 'var(--text-muted)', textTransform: 'uppercase', fontWeight: '600' }}>Active Test Cases</span>
+                <h3 style={{ fontSize: '28px', fontWeight: 'bold', margin: '8px 0', color: 'var(--text-primary)' }}>{testCases.length}</h3>
+                <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>Configured assertions</span>
+              </div>
+            </div>
+
+            <div>
+              <h3 style={{ fontSize: '14px', fontWeight: '600', marginBottom: '12px', color: 'var(--text-primary)' }}>Test Case Status Summary</h3>
+              <TestCasesDonutChart
+                passed={testCasesSummary.passed}
+                failed={testCasesSummary.failed}
+                untested={testCasesSummary.untested}
               />
-            </section>
-          </>
-        )}
+            </div>
 
-        {/* 2. REGRESSION TESTS RUNNER VIEWPORTS */}
-        {activeView === 'tests' && (
-          <>
-            {/* Left Sidebar */}
-            <section className="sidebar" style={{ width: `${sidebarWidth}px` }}>
-              <div className="sidebar-header">
-                <span className="sidebar-title">Test Suites</span>
-                <button 
-                  className="icon-btn" 
-                  onClick={() => {
-                    setTestSuiteName("");
-                    setTestCaseName("");
-                    setExpectStatus("200");
-                    setExpectMaxTime("500");
-                    setExpectContains("");
-                    const defaultReqId = currentWorkspace?.requests[0]?.id || "custom";
-                    setSelectedRequestForTestCaseId(defaultReqId);
-                    if (defaultReqId !== "custom") {
-                      const req = currentWorkspace?.requests.find(r => r.id === defaultReqId);
-                      setTestCaseName(req ? req.name : "");
-                    }
-                    setTcRequestMethod("GET");
-                    setTcRequestUrl("");
-                    setTcRequestItems([]);
-                    setShowAddTestDialog(true);
-                  }} 
-                  title="Create Test Case"
-                >
-                  <Plus size={16} />
-                </button>
-              </div>
-              <div className="request-tree-container">
-                <button
-                  type="button"
-                  className={`request-tree-item ${(!selectedTestCase && !selectedSuitePath) ? 'active' : ''}`}
-                  style={{ display: 'flex', alignItems: 'center', gap: '6px', fontWeight: '600', height: '32px', marginBottom: '8px', paddingLeft: '6px' }}
-                  onClick={() => {
-                    setSelectedTestCase(null);
-                    setSelectedSuitePath(null);
-                    setSuiteReport(null);
-                  }}
-                  
-                >
-                  <ShieldCheck size={14} style={{ color: 'var(--accent-hover)' }} />
-                  <span className="request-name" style={{ fontSize: '13px' }}>Dashboard Overview</span>
-                </button>
-
-                {suiteTree.length === 0 ? (
-                  <div style={{ padding: '24px 16px', textAlign: 'center', color: 'var(--text-muted)', fontSize: '13px' }}>
-                    No test cases saved in SQLite DB
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+              <h3 style={{ fontSize: '14px', fontWeight: '600', color: 'var(--text-primary)' }}>Saved Test Cases</h3>
+              <div style={{ border: '1px solid var(--border-color)', borderRadius: '8px', overflow: 'hidden' }}>
+                {testCases.length === 0 ? (
+                  <div style={{ padding: '24px', textAlign: 'center', color: 'var(--text-muted)', fontSize: '13px' }}>
+                    No test cases defined yet. Click the "+" button in the sidebar or "Generate Test" from collections view.
                   </div>
                 ) : (
-                  renderSuiteTree(suiteTree)
+                  testCases.map((tc) => (
+                    <button
+                      type="button"
+                      key={`${tc.suite}-${tc.name}`}
+                      style={{ width: '100%', display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 16px', borderBottom: '1px solid var(--border-color)', backgroundColor: 'var(--bg-secondary)', borderLeft: 'none', borderRight: 'none', borderTop: 'none', color: 'inherit', textAlign: 'left', cursor: 'pointer' }}
+                      onClick={() => {
+                        setSelectedTestCase(tc);
+                        setSelectedSuitePath(null);
+                        setRunReport(null);
+                      }}
+                    >
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                        <span className={`method-tag method-${tc.method.toLowerCase()}`} style={{ fontSize: '10px', minWidth: '38px', padding: '1px 3px' }}>{tc.method}</span>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                          <span style={{ fontWeight: '600', fontSize: '13px' }}>{tc.name}</span>
+                          <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>Suite: {tc.suite}</span>
+                        </div>
+                      </div>
+                      <span style={{ fontFamily: 'monospace', fontSize: '12px', color: 'var(--text-muted)' }}>{tc.url}</span>
+                    </button>
+                  ))
                 )}
               </div>
-            </section>
-
-            <ResizeDivider isDragging={isResizingSidebar} onMouseDown={handleMouseDownSidebar} label="Resize tests sidebar" />
-
-            {/* Center Test Specification Panel */}
-            <section className="request-pane">
-              {selectedTestCase && (
-                <>
-                  <div className="request-header">
-                    <div>
-                      <span className="select-label" style={{ display: 'block', marginBottom: '4px' }}>Suite: {selectedTestCase.suite}</span>
-                      <h2 style={{ fontSize: '18px', fontWeight: '600' }}>{selectedTestCase.name}</h2>
-                    </div>
-
-                    <div style={{ display: 'flex', gap: '8px', alignItems: 'center', padding: '10px 14px', backgroundColor: 'var(--bg-secondary)', borderRadius: '6px', border: '1px solid var(--border-color)', fontSize: '13px', color: 'var(--text-secondary)' }}>
-                      <span className={`method-tag method-${selectedTestCase.method.toLowerCase()}`}>{selectedTestCase.method}</span>
-                      <span style={{ fontFamily: 'monospace' }}>{selectedTestCase.url}</span>
-                    </div>
-                  </div>
-
-                  <div className="tab-content" style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
-                    <div>
-                      <h3 style={{ fontSize: '14px', fontWeight: '600', marginBottom: '10px', color: 'var(--text-primary)' }}>Execution Items</h3>
-                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
-                        {selectedTestCase.items.length === 0 ? (
-                          <span style={{ fontSize: '12px', color: 'var(--text-muted)' }}>No arguments</span>
-                        ) : (
-                          selectedTestCase.items.map((it) => (
-                            <span key={it} style={{ fontSize: '11px', fontFamily: 'monospace', padding: '4px 8px', backgroundColor: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: '4px' }}>{it}</span>
-                          ))
-                        )}
-                      </div>
-                    </div>
-
-                    <div>
-                      <h3 style={{ fontSize: '14px', fontWeight: '600', marginBottom: '10px', color: 'var(--text-primary)' }}>Target Expectations (Assertions)</h3>
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', fontSize: '13px' }}>
-                        {selectedTestCase.expect_status && (
-                          <div style={{ display: 'flex', justifyContent: 'space-between', padding: '8px', backgroundColor: 'var(--bg-secondary)', borderRadius: '6px' }}>
-                            <span style={{ color: 'var(--text-secondary)' }}>Expect Status Code</span>
-                            <span style={{ fontWeight: '600', color: 'var(--color-get)' }}>{selectedTestCase.expect_status}</span>
-                          </div>
-                        )}
-                        {selectedTestCase.max_time_ms && (
-                          <div style={{ display: 'flex', justifyContent: 'space-between', padding: '8px', backgroundColor: 'var(--bg-secondary)', borderRadius: '6px' }}>
-                            <span style={{ color: 'var(--text-secondary)' }}>Expect Maximum Duration</span>
-                            <span style={{ fontWeight: '600', color: 'var(--color-put)' }}>{selectedTestCase.max_time_ms} ms</span>
-                          </div>
-                        )}
-                        {selectedTestCase.expect_headers?.map((h) => (
-                          <div key={h} style={{ display: 'flex', justifyContent: 'space-between', padding: '8px', backgroundColor: 'var(--bg-secondary)', borderRadius: '6px' }}>
-                            <span style={{ color: 'var(--text-secondary)' }}>Expect Header HeaderName</span>
-                            <span style={{ fontFamily: 'monospace' }}>{h}</span>
-                          </div>
-                        ))}
-                        {selectedTestCase.expect_body_contains?.map((c) => (
-                          <div key={c} style={{ display: 'flex', justifyContent: 'space-between', padding: '8px', backgroundColor: 'var(--bg-secondary)', borderRadius: '6px' }}>
-                            <span style={{ color: 'var(--text-secondary)' }}>Expect Body Contains String</span>
-                            <span style={{ fontFamily: 'monospace', color: 'var(--color-post)' }}>"{c}"</span>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  </div>
-                </>
-              )}
-
-              {selectedSuitePath && (
-                <>
-                  <div className="request-header">
-                    <div>
-                      <span className="select-label" style={{ display: 'block', marginBottom: '4px' }}>Regression Test Suite Folder</span>
-                      <h2 style={{ fontSize: '18px', fontWeight: '600', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                        <Folder size={20} style={{ color: 'var(--accent-hover)' }} />
-                        <span>{selectedSuitePath}</span>
-                      </h2>
-                    </div>
-                  </div>
-
-                  <div className="tab-content" style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
-                    <div>
-                      <h3 style={{ fontSize: '14px', fontWeight: '600', marginBottom: '10px', color: 'var(--text-primary)' }}>Test Cases in Suite Folder</h3>
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                        {testCases.filter(tc => tc.suite === selectedSuitePath || tc.suite.startsWith(selectedSuitePath + ' / ')).map((tc) => (
-                          <button
-                            type="button"
-                            key={`${tc.suite}-${tc.name}`}
-                            style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px 14px', backgroundColor: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: '6px', cursor: 'pointer' }}
-                            onClick={() => {
-                              setSelectedTestCase(tc);
-                              setSelectedSuitePath(null);
-                              setRunReport(null);
-                            }}
-                          >
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                              <span className={`method-tag method-${tc.method.toLowerCase()}`} style={{ fontSize: '10px', minWidth: '38px', padding: '1px 3px' }}>{tc.method}</span>
-                              <span style={{ fontWeight: '500', fontSize: '13px' }}>{tc.name}</span>
-                            </div>
-                            <span style={{ fontFamily: 'monospace', fontSize: '12px', color: 'var(--text-muted)' }}>{tc.url}</span>
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  </div>
-                </>
-              )}
-
-              {!selectedTestCase && !selectedSuitePath && (
-                <>
-                  <div className="request-header">
-                    <div>
-                      <span className="select-label" style={{ display: 'block', marginBottom: '4px' }}>Overview Dashboard</span>
-                      <h2 style={{ fontSize: '18px', fontWeight: '600' }}>Regression Test Suites</h2>
-                    </div>
-                  </div>
-
-                  <div className="tab-content" style={{ display: 'flex', flexDirection: 'column', gap: '20px', overflowY: 'auto' }}>
-                    <div>
-                      <h3 style={{ fontSize: '14px', fontWeight: '600', marginBottom: '12px', color: 'var(--text-primary)' }}>Test Case Status Summary</h3>
-                      <TestCasesDonutChart 
-                        passed={testCasesSummary.passed} 
-                        failed={testCasesSummary.failed} 
-                        untested={testCasesSummary.untested} 
-                      />
-                    </div>
-
-                    <div>
-                      <h3 style={{ fontSize: '14px', fontWeight: '600', marginBottom: '12px', color: 'var(--text-primary)' }}>Recent Runs Log Feed</h3>
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                        {testRuns.length === 0 ? (
-                          <div style={{ padding: '24px 16px', textAlign: 'center', color: 'var(--text-muted)', fontSize: '13px', backgroundColor: 'var(--bg-secondary)', borderRadius: '6px', border: '1px solid var(--border-color)' }}>
-                            No test case runs logged in history yet.
-                          </div>
-                        ) : (
-                          testRuns.slice(0, 6).map((run) => (
-                            <div 
-                              key={run.id}
-                              style={{ 
-                                display: 'flex', 
-                                justifyContent: 'space-between', 
-                                alignItems: 'center', 
-                                padding: '10px 14px', 
-                                backgroundColor: 'var(--bg-secondary)', 
-                                border: '1px solid var(--border-color)', 
-                                borderRadius: '6px' 
-                              }}
-                            >
-                              <div style={{ display: 'flex', flexDirection: 'column', gap: '2px', minWidth: 0 }}>
-                                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
-                                  <span style={{ fontSize: '11px', color: 'var(--text-muted)', fontFamily: 'monospace' }}>{run.suite}</span>
-                                  <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>/</span>
-                                  <span style={{ fontWeight: '500', fontSize: '13px', color: 'var(--text-primary)', textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap', maxWidth: '200px' }} title={run.case_name}>{run.case_name}</span>
-                                </div>
-                                <div style={{ display: 'flex', gap: '8px', fontSize: '11px', color: 'var(--text-muted)' }}>
-                                  <span>{run.elapsed_ms} ms</span>
-                                  <span>•</span>
-                                  <span>Status: {run.status_code}</span>
-                                  <span>•</span>
-                                  <span>{new Date(run.created_at).toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' })}</span>
-                                </div>
-                              </div>
-                              
-                              <span 
-                                className={`method-tag method-${run.passed ? 'get' : 'delete'}`}
-                                style={{ 
-                                  fontSize: '10px', 
-                                  fontWeight: 'bold', 
-                                  textTransform: 'uppercase', 
-                                  padding: '2px 8px', 
-                                  borderRadius: '4px',
-                                  backgroundColor: run.passed ? 'rgba(16, 185, 129, 0.15)' : 'rgba(239, 68, 68, 0.15)',
-                                  color: run.passed ? 'var(--color-get)' : 'var(--color-delete)'
-                                }}
-                              >
-                                {run.passed ? 'Passed' : 'Failed'}
-                              </span>
-                            </div>
-                          ))
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                </>
-              )}
-            </section>
-
-            <ResizeDivider isDragging={isResizingResponse} onMouseDown={handleMouseDownResponse} label="Resize test details panel" />
-
-            {/* Right Test Results Panel */}
-            <section className="response-pane" style={{ width: `${responseWidth}px` }}>
-              <TestResultsPane
-                selectedTestCase={selectedTestCase}
-                selectedSuitePath={selectedSuitePath}
-                isRunningTest={isRunningTest}
-                runReport={runReport}
-                handleRunTestCase={handleRunTestCase}
-                isRunningSuite={isRunningSuite}
-                suiteProgress={suiteProgress}
-                suiteReport={suiteReport}
-                handleRunTestSuite={handleRunTestSuite}
-              />
-            </section>
-          </>
+            </div>
+          </div>
         )}
 
-        {/* 3. EXECUTION REPORTS HISTORY VIEWPORTS */}
-        {activeView === 'reports' && (
-          <>
-            {/* Left Sidebar */}
-            <section className="sidebar" style={{ width: `${sidebarWidth}px` }}>
-              <div className="sidebar-header">
-                <span className="sidebar-title">Execution History</span>
+        {selectedSuitePath && (
+          <div style={{ padding: '24px', display: 'flex', flexDirection: 'column', gap: '24px', height: '100%', overflowY: 'auto' }}>
+            <div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--text-muted)', fontSize: '12px', textTransform: 'uppercase', fontWeight: '600', marginBottom: '4px' }}>
+                <Folder size={12} />
+                <span>Suite Folder</span>
               </div>
-              <div className="request-tree-container">
-                {reports.length === 0 ? (
-                  <div style={{ padding: '24px 16px', textAlign: 'center', color: 'var(--text-muted)', fontSize: '13px' }}>
-                    No execution reports stored in local database
-                  </div>
-                ) : (
-                  reports.map(renderReportItem)
-                )}
-              </div>
-            </section>
+              <h2 style={{ fontSize: '20px', fontWeight: '700', color: 'var(--text-primary)' }}>{normalizeDisplayPath(selectedSuitePath)}</h2>
+            </div>
 
-            <ResizeDivider isDragging={isResizingSidebar} onMouseDown={handleMouseDownSidebar} label="Resize reports sidebar" />
-
-            {/* Center Panel: Detailed Report Viewer */}
-            <section className="request-pane">
-              {selectedReport ? (
-                <>
-                  <div className="request-header">
-                    <div>
-                      <span className="select-label" style={{ display: 'block', marginBottom: '4px' }}>Report #{selectedReport.id} ({selectedReport.module})</span>
-                      <h2 style={{ fontSize: '18px', fontWeight: '600' }}>{selectedReport.name}</h2>
-                      <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>Recorded on {new Date(selectedReport.created_at).toLocaleString()}</span>
-                    </div>
-
-                    <div style={{ padding: '12px', backgroundColor: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: '6px', fontSize: '13px', fontWeight: '500' }}>
-                      {selectedReport.summary}
-                    </div>
-                  </div>
-
-                  <ReportDetailsContent report={selectedReport} />
-                </>
-              ) : (
-                <div className="response-idle-state" style={{ backgroundColor: 'var(--bg-primary)' }}>
-                  <div style={{ padding: '24px', backgroundColor: 'var(--bg-secondary)', borderRadius: '50%', border: '1px solid var(--border-color)' }}>
-                    <Database size={32} className="idle-icon" />
-                  </div>
-                  <h3 className="idle-title">Select a history report</h3>
-                  <p className="idle-text font-normal">Select an execution log record from the database list on the left to inspect detailed traces.</p>
+            <div className="tab-content" style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+              <div>
+                <h3 style={{ fontSize: '14px', fontWeight: '600', marginBottom: '10px', color: 'var(--text-primary)' }}>Test Cases in Suite Folder</h3>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                  {testCases.filter(tc => tc.suite === selectedSuitePath || tc.suite.startsWith(selectedSuitePath + ' / ')).map((tc) => (
+                    <button
+                      type="button"
+                      key={`${tc.suite}-${tc.name}`}
+                      style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px 14px', backgroundColor: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: '6px', cursor: 'pointer' }}
+                      onClick={() => {
+                        setSelectedTestCase(tc);
+                        setSelectedSuitePath(null);
+                        setRunReport(null);
+                      }}
+                    >
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <span className={`method-tag method-${tc.method.toLowerCase()}`} style={{ fontSize: '10px', minWidth: '38px', padding: '1px 3px' }}>{tc.method}</span>
+                        <span style={{ fontWeight: '500', fontSize: '13px' }}>{tc.name}</span>
+                      </div>
+                      <span style={{ fontFamily: 'monospace', fontSize: '12px', color: 'var(--text-muted)' }}>{tc.url}</span>
+                    </button>
+                  ))}
                 </div>
-              )}
-            </section>
-
-            <ResizeDivider isDragging={isResizingResponse} onMouseDown={handleMouseDownResponse} label="Resize reports summary panel" />
-
-            {/* Right Panel: Empty/Summary panel for reports */}
-            <section className="response-pane" style={{ width: `${responseWidth}px` }}>
-              <div className="response-idle-state">
-                <Terminal size={28} className="idle-icon" />
-                <h3 className="idle-title">System Audit Log</h3>
-                <p className="idle-text font-normal">Reports are automatically populated inside the SQLite database whenever requests are run through CLI, TUI, or GUI modules.</p>
               </div>
-            </section>
-          </>
+            </div>
+          </div>
         )}
-      </main>
 
-      {/* Workspace Creation Modal */}
+        {selectedTestCase && (
+          <div style={{ padding: '24px', display: 'flex', flexDirection: 'column', gap: '24px', height: '100%', overflowY: 'auto' }}>
+            <div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--text-muted)', fontSize: '12px', textTransform: 'uppercase', fontWeight: '600', marginBottom: '4px' }}>
+                <ShieldCheck size={12} />
+                <span>Test Case Sweep</span>
+              </div>
+              <h2 style={{ fontSize: '20px', fontWeight: '700', color: 'var(--text-primary)', marginBottom: '8px' }}>{selectedTestCase.name}</h2>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '12px', fontSize: '13px', color: 'var(--text-secondary)' }}>
+                <span className={`method-tag method-${selectedTestCase.method.toLowerCase()}`} style={{ padding: '2px 6px', fontSize: '10px' }}>{selectedTestCase.method}</span>
+                <span style={{ fontFamily: 'monospace' }}>{selectedTestCase.url}</span>
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '16px', backgroundColor: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: '8px', padding: '16px' }}>
+              <h3 style={{ fontSize: '13px', fontWeight: '600', textTransform: 'uppercase', color: 'var(--text-muted)', margin: 0 }}>Sweep Assertions Config</h3>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '12px', fontSize: '13px' }}>
+                {selectedTestCase.expect_status && (
+                  <div>
+                    <div style={{ color: 'var(--text-muted)', marginBottom: '2px' }}>Expected Status</div>
+                    <div style={{ fontWeight: '600', color: 'var(--text-primary)' }}>{selectedTestCase.expect_status}</div>
+                  </div>
+                )}
+                {selectedTestCase.max_time_ms && (
+                  <div>
+                    <div style={{ color: 'var(--text-muted)', marginBottom: '2px' }}>Max Latency Limit</div>
+                    <div style={{ fontWeight: '600', color: 'var(--text-primary)' }}>{selectedTestCase.max_time_ms} ms</div>
+                  </div>
+                )}
+                {selectedTestCase.expect_body_contains && selectedTestCase.expect_body_contains.length > 0 && (
+                  <div>
+                    <div style={{ color: 'var(--text-muted)', marginBottom: '2px' }}>Expected Substring</div>
+                    <div style={{ fontWeight: '600', color: 'var(--text-primary)', fontFamily: 'monospace' }}>"{selectedTestCase.expect_body_contains[0]}"</div>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+      </section>
+
+      <ResizeDivider isDragging={isResizingResponse} onMouseDown={handleMouseDownResponse} label="Resize test details panel" />
+
+      <section className="response-pane" style={{ width: `${responseWidth}px` }}>
+        <TestResultsPane
+          selectedTestCase={selectedTestCase}
+          selectedSuitePath={selectedSuitePath}
+          isRunningTest={isRunningTest}
+          runReport={runReport}
+          handleRunTestCase={handleRunTestCase}
+          isRunningSuite={isRunningSuite}
+          suiteProgress={suiteProgress}
+          suiteReport={suiteReport}
+          handleRunTestSuite={handleRunTestSuite}
+        />
+      </section>
+    </>
+  );
+
+  const renderReportsView = () => {
+    const passedReports = reports.filter(r => isReportPassed(r));
+    const failedReports = reports.filter(r => !isReportPassed(r));
+    
+    return (
+      <>
+        <section className="sidebar" style={{ width: `${sidebarWidth}px` }}>
+          <div className="sidebar-header">
+            <span className="sidebar-title">Execution Reports</span>
+          </div>
+          <div className="request-tree-container">
+            {reports.length === 0 ? (
+              <div style={{ padding: '24px 16px', textAlign: 'center', color: 'var(--text-muted)', fontSize: '13px' }}>
+                No execution reports saved. Run a request or test sweep.
+              </div>
+            ) : (
+              reports.map(renderReportItem)
+            )}
+          </div>
+        </section>
+
+        <ResizeDivider isDragging={isResizingSidebar} onMouseDown={handleMouseDownSidebar} label="Resize reports sidebar" />
+
+        <section className="request-pane">
+          {!selectedReport ? (
+            <div style={{ padding: '24px', display: 'flex', flexDirection: 'column', gap: '24px' }}>
+              <div>
+                <h2 style={{ fontSize: '20px', fontWeight: '700', marginBottom: '8px', color: 'var(--text-primary)' }}>System History Metrics</h2>
+                <p style={{ color: 'var(--text-secondary)', fontSize: '13px' }}>Audit log and performance reports generated from your workbench and test suite operations.</p>
+              </div>
+              
+              <TestCasesDonutChart 
+                passed={passedReports.length} 
+                failed={failedReports.length} 
+                untested={0} 
+              />
+            </div>
+          ) : (
+            <div style={{ height: '100%', overflowY: 'auto' }}>
+              <ReportDetailsContent report={selectedReport} />
+            </div>
+          )}
+        </section>
+
+        <ResizeDivider isDragging={isResizingResponse} onMouseDown={handleMouseDownResponse} label="Resize reports summary panel" />
+
+        <section className="response-pane" style={{ width: `${responseWidth}px` }}>
+          {selectedReport ? (
+            <div style={{ padding: '16px', display: 'flex', flexDirection: 'column', gap: '16px', height: '100%', overflowY: 'auto' }}>
+              <div>
+                <h3 style={{ fontSize: '14px', fontWeight: '600', color: 'var(--text-primary)', marginBottom: '8px' }}>Report Overview</h3>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', fontSize: '13px', color: 'var(--text-secondary)' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid var(--border-color)', paddingBottom: '6px' }}>
+                    <span>Target Module</span>
+                    <span style={{ fontWeight: '600', color: 'var(--text-primary)', textTransform: 'capitalize' }}>{selectedReport.module}</span>
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid var(--border-color)', paddingBottom: '6px' }}>
+                    <span>Result Status</span>
+                    <span style={{ fontWeight: '600', color: isReportPassed(selectedReport) ? 'var(--color-get)' : 'var(--color-delete)' }}>{isReportPassed(selectedReport) ? 'PASSED' : 'FAILED'}</span>
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid var(--border-color)', paddingBottom: '6px' }}>
+                    <span>Timestamp</span>
+                    <span>{new Date(selectedReport.created_at).toLocaleString()}</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div className="response-idle-state">
+              <Database size={28} className="idle-icon" />
+              <h3 className="idle-title">Select a report to view metadata</h3>
+            </div>
+          )}
+        </section>
+      </>
+    );
+  };
+
+  const renderDialogs = () => (
+    <>
       {showCreateWorkspace && (
         <div className="dialog-overlay">
           <div className="dialog-content">
@@ -4117,7 +4092,6 @@ export default function App() {
         </div>
       )}
 
-      {/* Workspace Renaming Modal */}
       {showRenameWorkspace && (
         <div className="dialog-overlay">
           <div className="dialog-content">
@@ -4143,7 +4117,6 @@ export default function App() {
         </div>
       )}
 
-      {/* Settings Info Modal */}
       {showSettings && (
         <div className="dialog-overlay">
           <div className="dialog-content" style={{ width: '480px' }}>
@@ -4201,7 +4174,6 @@ export default function App() {
                   Manage native secrets. Reference key names using double curly braces, e.g. <code>{"{{MY_API_KEY}}"}</code>. Values are loaded securely at runtime and never saved in workspaces.
                 </p>
                 
-                {/* Add new secret form */}
                 <div style={{ display: 'flex', gap: '8px', alignItems: 'flex-end', backgroundColor: 'var(--bg-primary)', padding: '10px', borderRadius: '6px', border: '1px solid var(--border-color)' }}>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', flex: 1 }}>
                     <label htmlFor="secret-key-input" style={{ fontSize: '11px', color: 'var(--text-muted)' }}>Key Name</label>
@@ -4232,7 +4204,6 @@ export default function App() {
                   </button>
                 </div>
 
-                {/* Secrets list */}
                 <div style={{ maxHeight: '180px', overflowY: 'auto', border: '1px solid var(--border-color)', borderRadius: '6px' }}>
                   {secrets.length === 0 ? (
                     <div style={{ padding: '16px', color: 'var(--text-muted)', textAlign: 'center' }}>
@@ -4262,7 +4233,6 @@ export default function App() {
         </div>
       )}
 
-      {/* Import Workspace Modal */}
       {showImportDialog && (
         <div className="dialog-overlay">
           <div className="dialog-content">
@@ -4300,7 +4270,6 @@ export default function App() {
         </div>
       )}
 
-      {/* Export Workspace Modal */}
       {showExportDialog && (
         <div className="dialog-overlay">
           <div className="dialog-content">
@@ -4346,7 +4315,6 @@ export default function App() {
         </div>
       )}
 
-      {/* Create Test Case Modal */}
       {showAddTestDialog && (
         <div className="dialog-overlay">
           <div className="dialog-content" style={{ width: '420px' }}>
@@ -4486,6 +4454,49 @@ export default function App() {
           </div>
         </div>
       )}
+    </>
+  );
+
+  return (
+    <div className="app-shell">
+      {renderToolbar()}
+
+      {/* Main Workspace Body */}
+      <main className="workbench" ref={containerRef}>
+        
+        {/* Far Left Activity Bar */}
+        <nav className="activity-bar">
+          <button 
+            className={`activity-btn ${activeView === 'collections' ? 'active' : ''}`}
+            onClick={() => setActiveView('collections')}
+            title="Collections & Requests"
+          >
+            <Plus size={20} />
+          </button>
+          
+          <button 
+            className={`activity-btn ${activeView === 'tests' ? 'active' : ''}`}
+            onClick={() => setActiveView('tests')}
+            title="Regression Tests Runner"
+          >
+            <ShieldCheck size={20} />
+          </button>
+
+          <button 
+            className={`activity-btn ${activeView === 'reports' ? 'active' : ''}`}
+            onClick={() => setActiveView('reports')}
+            title="Execution History Reports"
+          >
+            <Database size={20} />
+          </button>
+        </nav>
+
+        {activeView === 'collections' && renderCollectionsView()}
+        {activeView === 'tests' && renderTestsView()}
+        {activeView === 'reports' && renderReportsView()}
+      </main>
+
+      {renderDialogs()}
     </div>
   );
 }
