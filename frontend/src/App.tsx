@@ -447,6 +447,47 @@ function createBodyRow(values?: Partial<Omit<BodyRow, 'id'>>): BodyRow {
   };
 }
 
+type ParsedRequestItem =
+  | { kind: 'query'; key: string; value: string }
+  | { kind: 'body'; key: string; value: string; type: BodyRow['type'] }
+  | { kind: 'auth'; token: string }
+  | { kind: 'header'; key: string; value: string };
+
+function parseRequestItem(trimmed: string): ParsedRequestItem | null {
+  if (trimmed.includes('==')) {
+    const idx = trimmed.indexOf('==');
+    return { kind: 'query', key: trimmed.substring(0, idx), value: trimmed.substring(idx + 2) };
+  }
+
+  if (trimmed.includes(':=')) {
+    const idx = trimmed.indexOf(':=');
+    return { kind: 'body', key: trimmed.substring(0, idx), value: trimmed.substring(idx + 2), type: 'json' };
+  }
+
+  if (trimmed.includes(':')) {
+    const idx = trimmed.indexOf(':');
+    const key = trimmed.substring(0, idx).trim();
+    const value = trimmed.substring(idx + 1).trim();
+    if (key.toLowerCase() === 'authorization' && value.toLowerCase().startsWith('bearer ')) {
+      return { kind: 'auth', token: value.substring(7) };
+    }
+    return { kind: 'header', key, value };
+  }
+
+  if (trimmed.includes('=')) {
+    const idx = trimmed.indexOf('=');
+    return { kind: 'body', key: trimmed.substring(0, idx), value: trimmed.substring(idx + 1), type: 'string' };
+  }
+
+  return null;
+}
+
+function ensureDefaultRequestRows(queryParams: ParamRow[], headers: ParamRow[], bodyFields: BodyRow[]) {
+  if (queryParams.length === 0) queryParams.push(createParamRow());
+  if (headers.length === 0) headers.push(createParamRow());
+  if (bodyFields.length === 0) bodyFields.push(createBodyRow());
+}
+
 function parseRequestItems(items: string[]) {
   const queryParams: ParamRow[] = [];
   const headers: ParamRow[] = [];
@@ -457,60 +498,29 @@ function parseRequestItems(items: string[]) {
   for (const item of items) {
     const trimmed = item.trim();
     if (!trimmed) continue;
-
-    if (trimmed.includes('==')) {
-      const idx = trimmed.indexOf('==');
-      queryParams.push(createParamRow({
-        key: trimmed.substring(0, idx),
-        value: trimmed.substring(idx + 2),
-        enabled: true
-      }));
+    const parsedItem = parseRequestItem(trimmed);
+    if (!parsedItem) {
       continue;
     }
 
-    if (trimmed.includes(':=')) {
-      const idx = trimmed.indexOf(':=');
-      bodyFields.push(createBodyRow({
-        key: trimmed.substring(0, idx),
-        value: trimmed.substring(idx + 2),
-        type: 'json',
-        enabled: true
-      }));
-      continue;
-    }
-
-    if (trimmed.includes(':')) {
-      const idx = trimmed.indexOf(':');
-      const key = trimmed.substring(0, idx).trim();
-      const val = trimmed.substring(idx + 1).trim();
-      if (key.toLowerCase() === 'authorization' && val.toLowerCase().startsWith('bearer ')) {
+    switch (parsedItem.kind) {
+      case 'query':
+        queryParams.push(createParamRow({ key: parsedItem.key, value: parsedItem.value, enabled: true }));
+        break;
+      case 'body':
+        bodyFields.push(createBodyRow({ key: parsedItem.key, value: parsedItem.value, type: parsedItem.type, enabled: true }));
+        break;
+      case 'auth':
         authType = 'bearer';
-        authToken = val.substring(7);
-      } else {
-        headers.push(createParamRow({
-          key,
-          value: val,
-          enabled: true
-        }));
-      }
-      continue;
-    }
-
-    if (trimmed.includes('=')) {
-      const idx = trimmed.indexOf('=');
-      bodyFields.push(createBodyRow({
-        key: trimmed.substring(0, idx),
-        value: trimmed.substring(idx + 1),
-        type: 'string',
-        enabled: true
-      }));
+        authToken = parsedItem.token;
+        break;
+      case 'header':
+        headers.push(createParamRow({ key: parsedItem.key, value: parsedItem.value, enabled: true }));
+        break;
     }
   }
 
-  if (queryParams.length === 0) queryParams.push(createParamRow());
-  if (headers.length === 0) headers.push(createParamRow());
-  if (bodyFields.length === 0) bodyFields.push(createBodyRow());
-
+  ensureDefaultRequestRows(queryParams, headers, bodyFields);
   return { queryParams, headers, bodyFields, authType, authToken };
 }
 
@@ -565,6 +575,17 @@ function buildRequestItems(
   ];
 }
 
+function flushCurlToken(args: string[], current: string) {
+  if (current) {
+    args.push(current);
+  }
+  return '';
+}
+
+function shouldSplitCurlToken(char: string, inDoubleQuote: boolean, inSingleQuote: boolean) {
+  return char === ' ' && !inDoubleQuote && !inSingleQuote;
+}
+
 function tokenizeCurlInput(input: string): string[] {
   const cleanInput = input.trim();
   if (!cleanInput.toLowerCase().startsWith('curl')) {
@@ -595,18 +616,13 @@ function tokenizeCurlInput(input: string): string[] {
       inSingleQuote = !inSingleQuote;
       continue;
     }
-    if (char === ' ' && !inDoubleQuote && !inSingleQuote) {
-      if (current) {
-        args.push(current);
-        current = '';
-      }
+    if (shouldSplitCurlToken(char, inDoubleQuote, inSingleQuote)) {
+      current = flushCurlToken(args, current);
     } else {
       current += char;
     }
   }
-  if (current) {
-    args.push(current);
-  }
+  flushCurlToken(args, current);
   return args;
 }
 
@@ -788,8 +804,8 @@ function formatResponseBody(response: ResponseDto) {
     const title = decodeHtmlEntities((headingMatch?.[1] || titleMatch?.[1] || '').replace(/<[^>]+>/g, '').trim());
     const text = decodeHtmlEntities(
       response.body
-        .replace(/<script\b[^>]*>(?:[^<]+|<\(?!\/script>))*<\/script>/gi, '')
-        .replace(/<style\b[^>]*>(?:[^<]+|<\(?!\/style>))*<\/style>/gi, '')
+        .replace(/<script\b[^>]*>(?:[^<]+|<(?!\/script>))*<\/script>/gi, '')
+        .replace(/<style\b[^>]*>(?:[^<]+|<(?!\/style>))*<\/style>/gi, '')
         .replace(/<\/(p|div|h[1-6]|li|tr|br)>/gi, '\n')
         .replace(/<[^>]+>/g, ' ')
         .replace(/[ \t]+/g, ' ')
@@ -1216,7 +1232,7 @@ function classifyJsonToken(token: string, nextChar: string): string {
   if (token.startsWith('"')) return nextChar === ':' ? 'json-key' : 'json-string';
   if (token === 'true' || token === 'false') return 'json-boolean';
   if (token === 'null') return 'json-null';
-  if (token[0] === '-' || (token[0] >= '0' && token[0] <= '9')) return 'json-number';
+  if (token.startsWith('-') || /^\d/.test(token)) return 'json-number';
   return 'json-punctuation';
 }
 
@@ -1266,8 +1282,419 @@ function JsonCode({ source }: Readonly<{ source: string }>) {
   );
 }
 
+function ResizeDivider({
+  isDragging,
+  onMouseDown,
+  label,
+}: Readonly<{ isDragging: boolean; onMouseDown: () => void; label: string }>) {
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      className={`resize-divider ${isDragging ? 'dragging' : ''}`}
+      onMouseDown={onMouseDown}
+    />
+  );
+}
+
+function CollectionsResponsePane({
+  isLoading,
+  errorText,
+  response,
+  responseTab,
+  setResponseTab,
+}: Readonly<{
+  isLoading: boolean;
+  errorText: string;
+  response: ResponseDto | null;
+  responseTab: string;
+  setResponseTab: (tab: string) => void;
+}>) {
+  const statusClass = response ? responseStatusClass(response.status) : '';
+
+  if (isLoading) {
+    return (
+      <div className="response-idle-state">
+        <RefreshCw size={32} className="animate-spin text-indigo-500" style={{ color: 'var(--accent-color)' }} />
+        <h3 className="idle-title">Executing Request</h3>
+        <p className="idle-text">Waiting for backend server response trace...</p>
+      </div>
+    );
+  }
+
+  if (errorText) {
+    return (
+      <div className="response-idle-state" style={{ color: '#ef4444' }}>
+        <AlertCircle size={32} />
+        <h3 className="idle-title" style={{ color: '#ef4444' }}>Request Error</h3>
+        <p className="idle-text" style={{ wordBreak: 'break-all' }}>{errorText}</p>
+      </div>
+    );
+  }
+
+  if (!response) {
+    return (
+      <div className="response-idle-state">
+        <div style={{ padding: '24px', backgroundColor: 'var(--bg-primary)', borderRadius: '50%', border: '1px solid var(--border-color)' }}>
+          <Play size={28} className="idle-icon" />
+        </div>
+        <h3 className="idle-title">Response panel is idle</h3>
+        <p className="idle-text font-normal">Send a request to inspect response body, headers, cookies, timing, and payload size.</p>
+      </div>
+    );
+  }
+
+  return (
+    <>
+      <div className="response-header">
+        <div className="response-summary">
+          <div className="summary-item">
+            <span className={`summary-value ${statusClass}`}>
+              {response.status} {response.reason}
+            </span>
+            <span className="summary-label">Status</span>
+          </div>
+          <div className="summary-item">
+            <span className="summary-value" style={{ color: 'var(--color-put)' }}>{response.elapsed_label}</span>
+            <span className="summary-label">Time</span>
+          </div>
+          <div className="summary-item">
+            <span className="summary-value">{response.size_label}</span>
+            <span className="summary-label">Size</span>
+          </div>
+        </div>
+        <span className="response-content-type">{response.content_type || 'unknown content'}</span>
+      </div>
+
+      <div className="tabs-row">
+        <button className={`tab-btn ${responseTab === 'body' ? 'active' : ''}`} onClick={() => setResponseTab('body')}>Body</button>
+        <button className={`tab-btn ${responseTab === 'headers' ? 'active' : ''}`} onClick={() => setResponseTab('headers')}>Headers</button>
+        <button className={`tab-btn ${responseTab === 'raw' ? 'active' : ''}`} onClick={() => setResponseTab('raw')}>Raw</button>
+        {response.test_results && response.test_results.length > 0 && (
+          <button className={`tab-btn ${responseTab === 'tests' ? 'active' : ''}`} onClick={() => setResponseTab('tests')}>Test Results</button>
+        )}
+      </div>
+
+      <div className="tab-content" style={{ padding: 0, display: 'flex', flexDirection: 'column' }}>
+        {responseTab === 'body' && (
+          <div className="response-body-wrapper">
+            {isHtmlResponse(response) && response.status >= 400 && (
+              <div className="response-error-banner">
+                <AlertCircle size={16} />
+                <span>The server returned an HTML error page. ZapReq is showing the readable text below; use Raw to inspect the original markup.</span>
+              </div>
+            )}
+            {isJsonResponse(response) ? (
+              <JsonCode source={formatResponseBody(response)} />
+            ) : (
+              <pre className="response-body-pre"><code>{formatResponseBody(response)}</code></pre>
+            )}
+          </div>
+        )}
+        {responseTab === 'raw' && (
+          <div className="response-body-wrapper">
+            <pre className="response-body-pre"><code>{response.body}</code></pre>
+          </div>
+        )}
+        {responseTab === 'headers' && (
+          <div style={{ padding: '20px', overflowY: 'auto' }}>
+            <table className="headers-table">
+              <thead>
+                <tr>
+                  <th>Header Key</th>
+                  <th>Value</th>
+                </tr>
+              </thead>
+              <tbody>
+                {response.headers.map((header) => (
+                  <tr key={`${header.key}-${header.value}`}>
+                    <td style={{ fontWeight: '500', color: 'var(--text-secondary)' }}>{header.key}</td>
+                    <td>{header.value}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+        {responseTab === 'tests' && response.test_results && (
+          <div style={{ padding: '20px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+            <h4 style={{ fontSize: '11px', textTransform: 'uppercase', color: 'var(--text-muted)', fontWeight: '600', marginBottom: '8px' }}>JavaScript Assertions Checklist</h4>
+            {response.test_results.map((result) => {
+              const isPass = result.startsWith('PASS:');
+              const cleanText = result.substring(5).trim();
+              return (
+                <div key={result} className={`assertion-item ${isPass ? 'passed' : 'failed'}`}>
+                  <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                    {isPass ? (
+                      <CheckCircle2 size={16} style={{ color: 'var(--color-get)' }} />
+                    ) : (
+                      <AlertCircle size={16} style={{ color: 'var(--color-delete)' }} />
+                    )}
+                    <span style={{ fontSize: '13px', fontWeight: '500', color: 'var(--text-primary)' }}>{cleanText}</span>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    </>
+  );
+}
+
+function TestResultsPane({
+  selectedTestCase,
+  selectedSuitePath,
+  isRunningTest,
+  runReport,
+  handleRunTestCase,
+  isRunningSuite,
+  suiteProgress,
+  suiteReport,
+  handleRunTestSuite,
+}: Readonly<{
+  selectedTestCase: StoredTestCase | null;
+  selectedSuitePath: string | null;
+  isRunningTest: boolean;
+  runReport: TestReport | null;
+  handleRunTestCase: () => void;
+  isRunningSuite: boolean;
+  suiteProgress: { current: number; total: number; caseName: string } | null;
+  suiteReport: {
+    suite: string;
+    generated_at: string;
+    passed: number;
+    failed: number;
+    cases: Array<{ case_name: string; passed: boolean; status: number; elapsed_ms: number }>;
+  } | null;
+  handleRunTestSuite: (suitePath: string) => void;
+}>) {
+  const runTone = runReport ? resultTone(runReport.passed) : null;
+  const suiteTone = suiteReport ? suiteResultTone(suiteReport.failed) : null;
+
+  return (
+    <>
+      {selectedTestCase && (
+        <>
+          <div className="response-header" style={{ justifyContent: 'center', padding: '24px' }}>
+            <button
+              className="send-btn"
+              onClick={handleRunTestCase}
+              disabled={isRunningTest}
+              style={{ width: '100%', justifyContent: 'center', height: '42px' }}
+            >
+              {isRunningTest ? (
+                <>
+                  <RefreshCw size={14} className="animate-spin" />
+                  <span>Running Assertions...</span>
+                </>
+              ) : (
+                <>
+                  <Play size={14} fill="white" />
+                  <span>Execute Test Case</span>
+                </>
+              )}
+            </button>
+          </div>
+
+          <div className="tab-content" style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+            {runReport ? (
+              <>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '12px', backgroundColor: runTone?.backgroundColor, borderRadius: '8px', border: `1px solid ${runTone?.borderColor}` }}>
+                  {runReport.passed ? <CheckCircle2 size={18} style={{ color: runTone?.iconColor }} /> : <AlertCircle size={18} style={{ color: runTone?.iconColor }} />}
+                  <span style={{ fontWeight: '600', fontSize: '14px' }}>{runTone?.message}</span>
+                </div>
+
+                <div style={{ display: 'flex', gap: '12px', fontSize: '11px', color: 'var(--text-secondary)', marginBottom: '8px' }}>
+                  <span>Duration: {runReport.elapsed_ms} ms</span>
+                  <span>|</span>
+                  <span>HTTP Status: {runReport.status}</span>
+                </div>
+
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                  <h4 style={{ fontSize: '11px', textTransform: 'uppercase', color: 'var(--text-muted)', fontWeight: '600' }}>Evaluation Checklist</h4>
+                  {runReport.assertions.map((assertion) => (
+                    <div key={`${assertion.assertion}-${assertion.details}`} className={`assertion-item ${assertion.passed ? 'passed' : 'failed'}`}>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                        <span style={{ fontSize: '13px', fontWeight: '500', color: 'var(--text-primary)' }}>{assertion.assertion}</span>
+                        <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>{assertion.details}</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </>
+            ) : (
+              <div className="response-idle-state" style={{ height: '300px' }}>
+                <Terminal size={24} className="idle-icon" />
+                <span className="idle-title" style={{ fontSize: '13px' }}>Runner is ready</span>
+                <p className="idle-text" style={{ fontSize: '12px' }}>Click the Execute button above to run real-time tests against this API specification.</p>
+              </div>
+            )}
+          </div>
+        </>
+      )}
+
+      {selectedSuitePath && (
+        <>
+          <div className="response-header" style={{ justifyContent: 'center', padding: '24px' }}>
+            <button
+              className="send-btn"
+              onClick={() => handleRunTestSuite(selectedSuitePath)}
+              disabled={isRunningSuite}
+              style={{ width: '100%', justifyContent: 'center', height: '42px' }}
+            >
+              {isRunningSuite ? (
+                <>
+                  <RefreshCw size={14} className="animate-spin" />
+                  <span>Running Suite sweeps...</span>
+                </>
+              ) : (
+                <>
+                  <Play size={14} fill="white" />
+                  <span>Execute Suite Sweeps</span>
+                </>
+              )}
+            </button>
+          </div>
+
+          <div className="tab-content" style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+            {isRunningSuite && suiteProgress ? (
+              <div style={{ padding: '12px 0', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--text-secondary)', fontSize: '13px' }}>
+                  <RefreshCw size={14} className="animate-spin" />
+                  <span>Running sequential assertions...</span>
+                </div>
+                <div style={{ padding: '12px', backgroundColor: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: '8px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px', fontSize: '12px' }}>
+                    <span style={{ fontWeight: '600', color: 'var(--text-primary)', textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap', maxWidth: '180px' }} title={suiteProgress.caseName}>{suiteProgress.caseName || 'Initializing...'}</span>
+                    <span style={{ color: 'var(--text-muted)' }}>{suiteProgress.current} / {suiteProgress.total}</span>
+                  </div>
+                  <div style={{ width: '100%', height: '6px', backgroundColor: 'rgba(255,255,255,0.08)', borderRadius: '3px', overflow: 'hidden' }}>
+                    <div style={{ width: `${progressPercent(suiteProgress.current, suiteProgress.total)}%`, height: '100%', backgroundColor: 'var(--accent-hover)', transition: 'width 0.1s ease' }} />
+                  </div>
+                </div>
+              </div>
+            ) : suiteReport ? (
+              <>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '12px', backgroundColor: suiteTone?.backgroundColor, borderRadius: '8px', border: `1px solid ${suiteTone?.borderColor}` }}>
+                  {suiteReport.failed === 0 ? <CheckCircle2 size={18} style={{ color: suiteTone?.iconColor }} /> : <AlertCircle size={18} style={{ color: suiteTone?.iconColor }} />}
+                  <span style={{ fontWeight: '600', fontSize: '14px' }}>{suiteTone?.message}</span>
+                </div>
+
+                <div style={{ display: 'flex', gap: '12px', fontSize: '11px', color: 'var(--text-secondary)', marginBottom: '8px' }}>
+                  <span>Passed: {suiteReport.passed}</span>
+                  <span>|</span>
+                  <span>Failed: {suiteReport.failed}</span>
+                </div>
+
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                  <h4 style={{ fontSize: '11px', textTransform: 'uppercase', color: 'var(--text-muted)', fontWeight: '600' }}>Suite Cases</h4>
+                  {suiteReport.cases.map((suiteCase) => (
+                    <div key={suiteCase.case_name} className={`assertion-item ${suiteCase.passed ? 'passed' : 'failed'}`} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 12px' }}>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                        <span style={{ fontSize: '13px', fontWeight: '500', color: 'var(--text-primary)' }}>{suiteCase.case_name}</span>
+                        <span style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>Status: {suiteCase.status} | {suiteCase.elapsed_ms} ms</span>
+                      </div>
+                      {suiteCase.passed ? <CheckCircle2 size={14} style={{ color: 'var(--color-get)' }} /> : <AlertCircle size={14} style={{ color: 'var(--color-delete)' }} />}
+                    </div>
+                  ))}
+                </div>
+              </>
+            ) : (
+              <div className="response-idle-state" style={{ height: '300px' }}>
+                <Terminal size={24} className="idle-icon" />
+                <span className="idle-title" style={{ fontSize: '13px' }}>Suite Runner is ready</span>
+                <p className="idle-text" style={{ fontSize: '12px' }}>Click the Execute Suite button above to run all sweeps in this test suite.</p>
+              </div>
+            )}
+          </div>
+        </>
+      )}
+
+      {!selectedTestCase && !selectedSuitePath && (
+        <div className="response-idle-state">
+          <Play size={28} className="idle-icon" />
+          <h3 className="idle-title">Test Runner is Idle</h3>
+          <p className="idle-text font-normal">Select a suite folder or test case to run assertions sweeps.</p>
+        </div>
+      )}
+    </>
+  );
+}
+
 function normalizedPathSegments(value: string, separator: string) {
   return value.split(separator).map((segment) => segment.trim()).filter(Boolean);
+}
+
+function normalizeDisplayPath(value: string) {
+  return normalizedPathSegments(value, '/').join(' / ');
+}
+
+function splitDisplayPath(value: string) {
+  return normalizedPathSegments(value, ' / ');
+}
+
+function requestBelongsToPath(requestName: string, path: string) {
+  return requestName === path || requestName.startsWith(`${path} / `);
+}
+
+function addEmptyFolderIfMissing(folders: string[], folder: string) {
+  return folders.includes(folder) ? folders : [...folders, folder];
+}
+
+function removeFolderAndDescendants(folders: string[], folder: string) {
+  return folders.filter((entry) => entry !== folder && !entry.startsWith(`${folder} / `));
+}
+
+function replaceWorkspaceRequest(
+  workspaces: WorkspaceDto[],
+  activeWorkspaceName: string,
+  activeRequest: RequestDto,
+  saved: RequestDto
+) {
+  return workspaces.map((workspace) => {
+    if (workspace.name !== activeWorkspaceName) {
+      return workspace;
+    }
+
+    return {
+      ...workspace,
+      requests: workspace.requests.map((request) => {
+        if (activeRequest.id && request.id === activeRequest.id) return saved;
+        if (!activeRequest.id && request.name === activeRequest.name) return saved;
+        return request;
+      })
+    };
+  });
+}
+
+function responseStatusClass(status: number) {
+  if (status < 300) return 'status-success';
+  if (status < 400) return 'status-redirect';
+  return 'status-error';
+}
+
+function resultTone(passed: boolean) {
+  return {
+    backgroundColor: passed ? 'rgba(16, 185, 129, 0.1)' : 'rgba(239, 68, 68, 0.1)',
+    borderColor: passed ? 'var(--color-get)' : 'var(--color-delete)',
+    iconColor: passed ? 'var(--color-get)' : 'var(--color-delete)',
+    message: passed ? 'Test Passed Successfully' : 'Expectation Assertion Failed',
+  };
+}
+
+function suiteResultTone(failedCount: number) {
+  const passed = failedCount === 0;
+  return {
+    backgroundColor: passed ? 'rgba(16, 185, 129, 0.1)' : 'rgba(239, 68, 68, 0.1)',
+    borderColor: passed ? 'var(--color-get)' : 'var(--color-delete)',
+    iconColor: passed ? 'var(--color-get)' : 'var(--color-delete)',
+    message: passed ? 'All Tests Passed' : `${failedCount} Assertions Failed`,
+  };
+}
+
+function progressPercent(current: number, total: number) {
+  return total > 0 ? (current / total) * 100 : 0;
 }
 
 function findOrCreateRequestChild(parent: RequestTreeNode, name: string, path: string, isFolder: boolean) {
@@ -2006,14 +2433,11 @@ export default function App() {
 
   const handleCreateRequestFolder = () => {
     const name = prompt("Enter folder path (e.g. 'Auth' or 'Billing / Nested'):");
-    if (!name || !name.trim()) return;
-    const cleanName = name.split('/').map(s => s.trim()).filter(Boolean).join(' / ');
+    if (!name?.trim()) return;
+    const cleanName = normalizeDisplayPath(name);
     if (!cleanName) return;
     
-    setCustomEmptyFolders(prev => {
-      if (prev.includes(cleanName)) return prev;
-      return [...prev, cleanName];
-    });
+    setCustomEmptyFolders((prev) => addEmptyFolderIfMissing(prev, cleanName));
   };
 
   const handleCreateRequestInFolder = async (folderPath: string) => {
@@ -2048,7 +2472,7 @@ export default function App() {
     const req = currentWorkspace.requests.find(r => r.id === requestId);
     if (!req) return;
     
-    const parts = req.name.split(' / ').map(s => s.trim()).filter(Boolean);
+    const parts = splitDisplayPath(req.name);
     const leafName = parts[parts.length - 1] || 'Untitled';
     const newName = targetFolder ? `${targetFolder} / ${leafName}` : leafName;
     
@@ -2075,14 +2499,11 @@ export default function App() {
       }
       
       if (oldFolder && currentWorkspace) {
-        const remainingInOldFolder = currentWorkspace.requests.filter(r => 
-          r.id !== req.id && (r.name === oldFolder || r.name.startsWith(oldFolder + ' / '))
+        const remainingInOldFolder = currentWorkspace.requests.filter((request) =>
+          request.id !== req.id && requestBelongsToPath(request.name, oldFolder)
         );
         if (remainingInOldFolder.length === 0) {
-          setCustomEmptyFolders(prev => {
-            if (prev.includes(oldFolder)) return prev;
-            return [...prev, oldFolder];
-          });
+          setCustomEmptyFolders((prev) => addEmptyFolderIfMissing(prev, oldFolder));
         }
       }
       
@@ -2101,21 +2522,18 @@ export default function App() {
     if (!confirm(`Are you sure you want to delete request '${name}'?`)) {
       return;
     }
-    const parts = name.split(' / ').map(s => s.trim()).filter(Boolean);
+    const parts = splitDisplayPath(name);
     const parentFolder = parts.slice(0, -1).join(' / ');
     
     try {
       await invoke('delete_request', { workspace: activeWorkspaceName, id: reqId });
       
       if (parentFolder && currentWorkspace) {
-        const remainingInFolder = currentWorkspace.requests.filter(r => 
-          r.id !== reqId && (r.name === parentFolder || r.name.startsWith(parentFolder + ' / '))
+        const remainingInFolder = currentWorkspace.requests.filter((request) =>
+          request.id !== reqId && requestBelongsToPath(request.name, parentFolder)
         );
         if (remainingInFolder.length === 0) {
-          setCustomEmptyFolders(prev => {
-            if (prev.includes(parentFolder)) return prev;
-            return [...prev, parentFolder];
-          });
+          setCustomEmptyFolders((prev) => addEmptyFolderIfMissing(prev, parentFolder));
         }
       }
       
@@ -2131,8 +2549,8 @@ export default function App() {
 
   const handleDeleteRequestFolder = async (folderPath: string) => {
     if (!currentWorkspace) return;
-    const requestsToDelete = currentWorkspace.requests.filter(r => 
-      r.name === folderPath || r.name.startsWith(folderPath + ' / ')
+    const requestsToDelete = currentWorkspace.requests.filter((request) =>
+      requestBelongsToPath(request.name, folderPath)
     );
     
     const isEmpty = requestsToDelete.length === 0;
@@ -2153,7 +2571,7 @@ export default function App() {
         }
       }
       
-      setCustomEmptyFolders(prev => prev.filter(f => f !== folderPath && !f.startsWith(folderPath + ' / ')));
+      setCustomEmptyFolders((prev) => removeFolderAndDescendants(prev, folderPath));
       
       const activeDeleted = requestsToDelete.some((r) => r.id === activeRequest?.id);
       if (activeDeleted) {
@@ -2170,7 +2588,7 @@ export default function App() {
     if (!activeRequest) return;
     const items = buildRequestItems(queryParams, headers, bodyFields, authType, authToken);
     
-    const oldParts = activeRequest.name.split(' / ').map(s => s.trim()).filter(Boolean);
+    const oldParts = splitDisplayPath(activeRequest.name);
     const oldFolder = oldParts.slice(0, -1).join(' / ');
     
     try {
@@ -2187,37 +2605,22 @@ export default function App() {
         }
       });
       
-      const newParts = requestName.split(' / ').map(s => s.trim()).filter(Boolean);
+      const newParts = splitDisplayPath(requestName);
       const newFolder = newParts.slice(0, -1).join(' / ');
       if (newFolder) {
         setCustomEmptyFolders(prev => prev.filter(f => f !== newFolder));
       }
       
       if (oldFolder && oldFolder !== newFolder && currentWorkspace) {
-        const remainingInOldFolder = currentWorkspace.requests.filter(r => 
-          r.id !== activeRequest.id && (r.name === oldFolder || r.name.startsWith(oldFolder + ' / '))
+        const remainingInOldFolder = currentWorkspace.requests.filter((request) =>
+          request.id !== activeRequest.id && requestBelongsToPath(request.name, oldFolder)
         );
         if (remainingInOldFolder.length === 0) {
-          setCustomEmptyFolders(prev => {
-            if (prev.includes(oldFolder)) return prev;
-            return [...prev, oldFolder];
-          });
+          setCustomEmptyFolders((prev) => addEmptyFolderIfMissing(prev, oldFolder));
         }
       }
       
-      setWorkspaces(prev => prev.map(w => {
-        if (w.name === activeWorkspaceName) {
-          return {
-            ...w,
-            requests: w.requests.map(r => {
-              if (activeRequest.id && r.id === activeRequest.id) return saved;
-              if (!activeRequest.id && r.name === activeRequest.name) return saved;
-              return r;
-            })
-          };
-        }
-        return w;
-      }));
+      setWorkspaces((prev) => replaceWorkspaceRequest(prev, activeWorkspaceName, activeRequest, saved));
       setActiveRequest(saved);
     } catch (e) {
       alert(`Error saving request: ${e}`);
@@ -2432,8 +2835,9 @@ export default function App() {
     const totalReqs = getRecursiveReqCount(node);
     return (
       <div key={pathKey} style={{ display: 'flex', flexDirection: 'column' }}>
-        <div 
+        <div
           className={`request-tree-item ${dragOverFolder === pathKey ? 'drag-over-folder' : ''}`}
+          aria-label={`Folder ${node.name}`}
           style={{ 
             display: 'flex', 
             justifyContent: 'space-between', 
@@ -2973,8 +3377,9 @@ export default function App() {
                 </div>
               </div>
 
-              <div 
+              <section
                 className="request-tree-container"
+                aria-label="Request collection tree and drop zone"
                 style={{
                   border: (dragOverRoot && !dragOverFolder) ? '1px dashed var(--accent-color)' : '1px solid transparent',
                   borderRadius: '4px',
@@ -3015,7 +3420,7 @@ export default function App() {
                 ) : (
                   renderRequestTree(requestTree)
                 )}
-              </div>
+              </section>
 
               <div className="sidebar-footer">
                 <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
@@ -3025,7 +3430,7 @@ export default function App() {
               </div>
             </section>
 
-            <div className={`resize-divider ${isResizingSidebar ? 'dragging' : ''}`} onMouseDown={handleMouseDownSidebar} />
+            <ResizeDivider isDragging={isResizingSidebar} onMouseDown={handleMouseDownSidebar} label="Resize collections sidebar" />
 
             {/* Center Request Editor */}
             <section className="request-pane">
@@ -3248,126 +3653,17 @@ export default function App() {
               )}
             </section>
 
-            <div className={`resize-divider ${isResizingResponse ? 'dragging' : ''}`} onMouseDown={handleMouseDownResponse} />
+            <ResizeDivider isDragging={isResizingResponse} onMouseDown={handleMouseDownResponse} label="Resize response panel" />
 
             {/* Right Response Panel */}
             <section className="response-pane" style={{ width: `${responseWidth}px` }}>
-              {isLoading ? (
-                <div className="response-idle-state">
-                  <RefreshCw size={32} className="animate-spin text-indigo-500" style={{ color: 'var(--accent-color)' }} />
-                  <h3 className="idle-title">Executing Request</h3>
-                  <p className="idle-text">Waiting for backend server response trace...</p>
-                </div>
-              ) : errorText ? (
-                <div className="response-idle-state" style={{ color: '#ef4444' }}>
-                  <AlertCircle size={32} />
-                  <h3 className="idle-title" style={{ color: '#ef4444' }}>Request Error</h3>
-                  <p className="idle-text" style={{ wordBreak: 'break-all' }}>{errorText}</p>
-                </div>
-              ) : response ? (
-                <>
-                  <div className="response-header">
-                    <div className="response-summary">
-                      <div className="summary-item">
-                        <span className={`summary-value ${response.status < 300 ? 'status-success' : response.status < 400 ? 'status-redirect' : 'status-error'}`}>
-                          {response.status} {response.reason}
-                        </span>
-                        <span className="summary-label">Status</span>
-                      </div>
-                      <div className="summary-item">
-                        <span className="summary-value" style={{ color: 'var(--color-put)' }}>{response.elapsed_label}</span>
-                        <span className="summary-label">Time</span>
-                      </div>
-                      <div className="summary-item">
-                        <span className="summary-value">{response.size_label}</span>
-                        <span className="summary-label">Size</span>
-                      </div>
-                    </div>
-                    <span className="response-content-type">{response.content_type || 'unknown content'}</span>
-                  </div>
-
-                  <div className="tabs-row">
-                    <button className={`tab-btn ${responseTab === 'body' ? 'active' : ''}`} onClick={() => setResponseTab('body')}>Body</button>
-                    <button className={`tab-btn ${responseTab === 'headers' ? 'active' : ''}`} onClick={() => setResponseTab('headers')}>Headers</button>
-                    <button className={`tab-btn ${responseTab === 'raw' ? 'active' : ''}`} onClick={() => setResponseTab('raw')}>Raw</button>
-                    {response.test_results && response.test_results.length > 0 && (
-                      <button className={`tab-btn ${responseTab === 'tests' ? 'active' : ''}`} onClick={() => setResponseTab('tests')}>Test Results</button>
-                    )}
-                  </div>
-
-                  <div className="tab-content" style={{ padding: 0, display: 'flex', flexDirection: 'column' }}>
-                    {responseTab === 'body' && (
-                      <div className="response-body-wrapper">
-                        {isHtmlResponse(response) && response.status >= 400 && (
-                          <div className="response-error-banner">
-                            <AlertCircle size={16} />
-                            <span>The server returned an HTML error page. ZapReq is showing the readable text below; use Raw to inspect the original markup.</span>
-                          </div>
-                        )}
-                        {isJsonResponse(response) ? (
-                          <JsonCode source={formatResponseBody(response)} />
-                        ) : (
-                          <pre className="response-body-pre"><code>{formatResponseBody(response)}</code></pre>
-                        )}
-                      </div>
-                    )}
-                    {responseTab === 'raw' && (
-                      <div className="response-body-wrapper">
-                        <pre className="response-body-pre"><code>{response.body}</code></pre>
-                      </div>
-                    )}
-                    {responseTab === 'headers' && (
-                      <div style={{ padding: '20px', overflowY: 'auto' }}>
-                        <table className="headers-table">
-                          <thead>
-                            <tr>
-                              <th>Header Key</th>
-                              <th>Value</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {response.headers.map((h) => (
-                              <tr key={`${h.key}-${h.value}`}>
-                                <td style={{ fontWeight: '500', color: 'var(--text-secondary)' }}>{h.key}</td>
-                                <td>{h.value}</td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </div>
-                    )}
-                    {responseTab === 'tests' && response.test_results && (
-                      <div style={{ padding: '20px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                        <h4 style={{ fontSize: '11px', textTransform: 'uppercase', color: 'var(--text-muted)', fontWeight: '600', marginBottom: '8px' }}>JavaScript Assertions Checklist</h4>
-                        {response.test_results.map((res) => {
-                          const isPass = res.startsWith('PASS:');
-                          const cleanText = res.substring(5).trim();
-                          return (
-                            <div key={res} className={`assertion-item ${isPass ? 'passed' : 'failed'}`}>
-                              <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-                                {isPass ? (
-                                  <CheckCircle2 size={16} style={{ color: 'var(--color-get)' }} />
-                                ) : (
-                                  <AlertCircle size={16} style={{ color: 'var(--color-delete)' }} />
-                                )}
-                                <span style={{ fontSize: '13px', fontWeight: '500', color: 'var(--text-primary)' }}>{cleanText}</span>
-                              </div>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    )}
-                  </div>
-                </>
-              ) : (
-                <div className="response-idle-state">
-                  <div style={{ padding: '24px', backgroundColor: 'var(--bg-primary)', borderRadius: '50%', border: '1px solid var(--border-color)' }}>
-                    <Play size={28} className="idle-icon" />
-                  </div>
-                  <h3 className="idle-title">Response panel is idle</h3>
-                  <p className="idle-text font-normal">Send a request to inspect response body, headers, cookies, timing, and payload size.</p>
-                </div>
-              )}
+              <CollectionsResponsePane
+                isLoading={isLoading}
+                errorText={errorText}
+                response={response}
+                responseTab={responseTab}
+                setResponseTab={setResponseTab}
+              />
             </section>
           </>
         )}
@@ -3429,7 +3725,7 @@ export default function App() {
               </div>
             </section>
 
-            <div className={`resize-divider ${isResizingSidebar ? 'dragging' : ''}`} onMouseDown={handleMouseDownSidebar} />
+            <ResizeDivider isDragging={isResizingSidebar} onMouseDown={handleMouseDownSidebar} label="Resize tests sidebar" />
 
             {/* Center Test Specification Panel */}
             <section className="request-pane">
@@ -3613,160 +3909,21 @@ export default function App() {
               )}
             </section>
 
-            <div className={`resize-divider ${isResizingResponse ? 'dragging' : ''}`} onMouseDown={handleMouseDownResponse} />
+            <ResizeDivider isDragging={isResizingResponse} onMouseDown={handleMouseDownResponse} label="Resize test details panel" />
 
             {/* Right Test Results Panel */}
             <section className="response-pane" style={{ width: `${responseWidth}px` }}>
-              {selectedTestCase && (
-                <>
-                  <div className="response-header" style={{ justifyContent: 'center', padding: '24px' }}>
-                    <button 
-                      className="send-btn" 
-                      onClick={handleRunTestCase} 
-                      disabled={isRunningTest}
-                      style={{ width: '100%', justifyContent: 'center', height: '42px' }}
-                    >
-                      {isRunningTest ? (
-                        <>
-                          <RefreshCw size={14} className="animate-spin" />
-                          <span>Running Assertions...</span>
-                        </>
-                      ) : (
-                        <>
-                          <Play size={14} fill="white" />
-                          <span>Execute Test Case</span>
-                        </>
-                      )}
-                    </button>
-                  </div>
-
-                  <div className="tab-content" style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                    {runReport ? (
-                      <>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '12px', backgroundColor: runReport.passed ? 'rgba(16, 185, 129, 0.1)' : 'rgba(239, 68, 68, 0.1)', borderRadius: '8px', border: `1px solid ${runReport.passed ? 'var(--color-get)' : 'var(--color-delete)'}` }}>
-                          {runReport.passed ? <CheckCircle2 size={18} style={{ color: 'var(--color-get)' }} /> : <AlertCircle size={18} style={{ color: 'var(--color-delete)' }} />}
-                          <span style={{ fontWeight: '600', fontSize: '14px' }}>{runReport.passed ? "Test Passed Successfully" : "Expectation Assertion Failed"}</span>
-                        </div>
-
-                        <div style={{ display: 'flex', gap: '12px', fontSize: '11px', color: 'var(--text-secondary)', marginBottom: '8px' }}>
-                          <span>Duration: {runReport.elapsed_ms} ms</span>
-                          <span>|</span>
-                          <span>HTTP Status: {runReport.status}</span>
-                        </div>
-
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                          <h4 style={{ fontSize: '11px', textTransform: 'uppercase', color: 'var(--text-muted)', fontWeight: '600' }}>Evaluation Checklist</h4>
-                          {runReport.assertions.map((ass) => (
-                            <div key={`${ass.assertion}-${ass.details}`} className={`assertion-item ${ass.passed ? 'passed' : 'failed'}`}>
-                              <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
-                                <span style={{ fontSize: '13px', fontWeight: '500', color: 'var(--text-primary)' }}>{ass.assertion}</span>
-                                <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>{ass.details}</span>
-                              </div>
-                            </div>
-                          ))}
-                        </div>
-                      </>
-                    ) : (
-                      <div className="response-idle-state" style={{ height: '300px' }}>
-                        <Terminal size={24} className="idle-icon" />
-                        <span className="idle-title" style={{ fontSize: '13px' }}>Runner is ready</span>
-                        <p className="idle-text" style={{ fontSize: '12px' }}>Click the Execute button above to run real-time tests against this API specification.</p>
-                      </div>
-                    )}
-                  </div>
-                </>
-              )}
-
-              {selectedSuitePath && (
-                <>
-                  <div className="response-header" style={{ justifyContent: 'center', padding: '24px' }}>
-                    <button 
-                      className="send-btn" 
-                      onClick={() => handleRunTestSuite(selectedSuitePath)} 
-                      disabled={isRunningSuite}
-                      style={{ width: '100%', justifyContent: 'center', height: '42px' }}
-                    >
-                      {isRunningSuite ? (
-                        <>
-                          <RefreshCw size={14} className="animate-spin" />
-                          <span>Running Suite sweeps...</span>
-                        </>
-                      ) : (
-                        <>
-                          <Play size={14} fill="white" />
-                          <span>Execute Suite Sweeps</span>
-                        </>
-                      )}
-                    </button>
-                  </div>
-
-                  <div className="tab-content" style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                    {isRunningSuite && suiteProgress ? (
-                      <div style={{ padding: '12px 0', display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--text-secondary)', fontSize: '13px' }}>
-                          <RefreshCw size={14} className="animate-spin" />
-                          <span>Running sequential assertions...</span>
-                        </div>
-                        <div style={{ padding: '12px', backgroundColor: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: '8px' }}>
-                          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px', fontSize: '12px' }}>
-                            <span style={{ fontWeight: '600', color: 'var(--text-primary)', textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap', maxWidth: '180px' }} title={suiteProgress.caseName}>{suiteProgress.caseName || 'Initializing...'}</span>
-                            <span style={{ color: 'var(--text-muted)' }}>{suiteProgress.current} / {suiteProgress.total}</span>
-                          </div>
-                          <div style={{ width: '100%', height: '6px', backgroundColor: 'rgba(255,255,255,0.08)', borderRadius: '3px', overflow: 'hidden' }}>
-                            <div style={{ width: `${suiteProgress.total > 0 ? (suiteProgress.current / suiteProgress.total) * 100 : 0}%`, height: '100%', backgroundColor: 'var(--accent-hover)', transition: 'width 0.1s ease' }} />
-                          </div>
-                        </div>
-                      </div>
-                    ) : suiteReport ? (
-                      <>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '12px', backgroundColor: suiteReport.failed === 0 ? 'rgba(16, 185, 129, 0.1)' : 'rgba(239, 68, 68, 0.1)', borderRadius: '8px', border: `1px solid ${suiteReport.failed === 0 ? 'var(--color-get)' : 'var(--color-delete)'}` }}>
-                          {suiteReport.failed === 0 ? <CheckCircle2 size={18} style={{ color: 'var(--color-get)' }} /> : <AlertCircle size={18} style={{ color: 'var(--color-delete)' }} />}
-                          <span style={{ fontWeight: '600', fontSize: '14px' }}>
-                            {suiteReport.failed === 0 ? "All Tests Passed" : `${suiteReport.failed} Assertions Failed`}
-                          </span>
-                        </div>
-
-                        <div style={{ display: 'flex', gap: '12px', fontSize: '11px', color: 'var(--text-secondary)', marginBottom: '8px' }}>
-                          <span>Passed: {suiteReport.passed}</span>
-                          <span>|</span>
-                          <span>Failed: {suiteReport.failed}</span>
-                        </div>
-
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                          <h4 style={{ fontSize: '11px', textTransform: 'uppercase', color: 'var(--text-muted)', fontWeight: '600' }}>Suite Cases</h4>
-                          {suiteReport.cases.map((c) => (
-                            <div 
-                              key={c.case_name} 
-                              className={`assertion-item ${c.passed ? 'passed' : 'failed'}`}
-                              style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 12px' }}
-                            >
-                              <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
-                                <span style={{ fontSize: '13px', fontWeight: '500', color: 'var(--text-primary)' }}>{c.case_name}</span>
-                                <span style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>Status: {c.status} | {c.elapsed_ms} ms</span>
-                              </div>
-                              {c.passed ? <CheckCircle2 size={14} style={{ color: 'var(--color-get)' }} /> : <AlertCircle size={14} style={{ color: 'var(--color-delete)' }} />}
-                            </div>
-                          ))}
-                        </div>
-                      </>
-                    ) : (
-                      <div className="response-idle-state" style={{ height: '300px' }}>
-                        <Terminal size={24} className="idle-icon" />
-                        <span className="idle-title" style={{ fontSize: '13px' }}>Suite Runner is ready</span>
-                        <p className="idle-text" style={{ fontSize: '12px' }}>Click the Execute Suite button above to run all sweeps in this test suite.</p>
-                      </div>
-                    )}
-                  </div>
-                </>
-              )}
-
-              {!selectedTestCase && !selectedSuitePath && (
-                <div className="response-idle-state">
-                  <Play size={28} className="idle-icon" />
-                  <h3 className="idle-title">Test Runner is Idle</h3>
-                  <p className="idle-text font-normal">Select a suite folder or test case to run assertions sweeps.</p>
-                </div>
-              )}
+              <TestResultsPane
+                selectedTestCase={selectedTestCase}
+                selectedSuitePath={selectedSuitePath}
+                isRunningTest={isRunningTest}
+                runReport={runReport}
+                handleRunTestCase={handleRunTestCase}
+                isRunningSuite={isRunningSuite}
+                suiteProgress={suiteProgress}
+                suiteReport={suiteReport}
+                handleRunTestSuite={handleRunTestSuite}
+              />
             </section>
           </>
         )}
@@ -3790,7 +3947,7 @@ export default function App() {
               </div>
             </section>
 
-            <div className={`resize-divider ${isResizingSidebar ? 'dragging' : ''}`} onMouseDown={handleMouseDownSidebar} />
+            <ResizeDivider isDragging={isResizingSidebar} onMouseDown={handleMouseDownSidebar} label="Resize reports sidebar" />
 
             {/* Center Panel: Detailed Report Viewer */}
             <section className="request-pane">
@@ -3821,7 +3978,7 @@ export default function App() {
               )}
             </section>
 
-            <div className={`resize-divider ${isResizingResponse ? 'dragging' : ''}`} onMouseDown={handleMouseDownResponse} />
+            <ResizeDivider isDragging={isResizingResponse} onMouseDown={handleMouseDownResponse} label="Resize reports summary panel" />
 
             {/* Right Panel: Empty/Summary panel for reports */}
             <section className="response-pane" style={{ width: `${responseWidth}px` }}>
