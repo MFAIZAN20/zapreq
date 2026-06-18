@@ -27,8 +27,9 @@ declare global {
 
 let invoke: InvokeFn;
 try {
-  if ((globalThis as any).__TAURI_INTERNALS__) {
-    invoke = (globalThis as any).__TAURI_INTERNALS__.invoke;
+  const tauriInternals = (globalThis as typeof globalThis & Window).__TAURI_INTERNALS__;
+  if (tauriInternals) {
+    invoke = tauriInternals.invoke;
   } else {
     // Import from core if present
     const tauriCore = await import('@tauri-apps/api/core');
@@ -404,16 +405,46 @@ interface TestReport {
 }
 
 interface ParamRow {
+  id: string;
   key: string;
   value: string;
   enabled: boolean;
 }
 
 interface BodyRow {
+  id: string;
   key: string;
   value: string;
   type: 'string' | 'json';
   enabled: boolean;
+}
+
+let rowIdCounter = 0;
+
+function nextRowId(prefix: string) {
+  rowIdCounter += 1;
+  return `${prefix}-${rowIdCounter}`;
+}
+
+function createParamRow(values?: Partial<Omit<ParamRow, 'id'>>): ParamRow {
+  return {
+    id: nextRowId('param'),
+    key: '',
+    value: '',
+    enabled: true,
+    ...values,
+  };
+}
+
+function createBodyRow(values?: Partial<Omit<BodyRow, 'id'>>): BodyRow {
+  return {
+    id: nextRowId('body'),
+    key: '',
+    value: '',
+    type: 'string',
+    enabled: true,
+    ...values,
+  };
 }
 
 function parseRequestItems(items: string[]) {
@@ -429,22 +460,22 @@ function parseRequestItems(items: string[]) {
 
     if (trimmed.includes('==')) {
       const idx = trimmed.indexOf('==');
-      queryParams.push({
+      queryParams.push(createParamRow({
         key: trimmed.substring(0, idx),
         value: trimmed.substring(idx + 2),
         enabled: true
-      });
+      }));
       continue;
     }
 
     if (trimmed.includes(':=')) {
       const idx = trimmed.indexOf(':=');
-      bodyFields.push({
+      bodyFields.push(createBodyRow({
         key: trimmed.substring(0, idx),
         value: trimmed.substring(idx + 2),
         type: 'json',
         enabled: true
-      });
+      }));
       continue;
     }
 
@@ -456,29 +487,29 @@ function parseRequestItems(items: string[]) {
         authType = 'bearer';
         authToken = val.substring(7);
       } else {
-        headers.push({
+        headers.push(createParamRow({
           key,
           value: val,
           enabled: true
-        });
+        }));
       }
       continue;
     }
 
     if (trimmed.includes('=')) {
       const idx = trimmed.indexOf('=');
-      bodyFields.push({
+      bodyFields.push(createBodyRow({
         key: trimmed.substring(0, idx),
         value: trimmed.substring(idx + 1),
         type: 'string',
         enabled: true
-      });
+      }));
     }
   }
 
-  if (queryParams.length === 0) queryParams.push({ key: '', value: '', enabled: true });
-  if (headers.length === 0) headers.push({ key: '', value: '', enabled: true });
-  if (bodyFields.length === 0) bodyFields.push({ key: '', value: '', type: 'string', enabled: true });
+  if (queryParams.length === 0) queryParams.push(createParamRow());
+  if (headers.length === 0) headers.push(createParamRow());
+  if (bodyFields.length === 0) bodyFields.push(createBodyRow());
 
   return { queryParams, headers, bodyFields, authType, authToken };
 }
@@ -646,53 +677,75 @@ function parseCurlCommand(input: string) {
   return { method: method.toUpperCase(), url, headers, bodyFields, rawBody };
 }
 
+function hasJsonContentType(headers: ParamRow[]) {
+  return headers.some(
+    (header) =>
+      header.enabled &&
+      header.key.trim().toLowerCase() === 'content-type' &&
+      header.value.trim().toLowerCase().includes('json')
+  );
+}
+
+function stringifyHeaderArg(header: ParamRow) {
+  return ` \\\n  -H "${header.key.trim()}: ${header.value.trim()}"`;
+}
+
+function coerceCurlJsonValue(field: BodyRow) {
+  if (field.type === 'json') {
+    try {
+      return JSON.parse(field.value);
+    } catch {
+      return field.value;
+    }
+  }
+
+  const value = field.value.trim();
+  if (value === 'true') return true;
+  if (value === 'false') return false;
+  if (value === 'null') return null;
+  if (/^\d+$/.test(value)) return Number.parseInt(value, 10);
+  if (/^\d+\.\d+$/.test(value)) return Number.parseFloat(value);
+  return field.value;
+}
+
+function buildJsonCurlBody(activeBody: BodyRow[]) {
+  const payload: Record<string, unknown> = {};
+  for (const field of activeBody) {
+    payload[field.key.trim()] = coerceCurlJsonValue(field);
+  }
+  return JSON.stringify(payload);
+}
+
+function buildFormCurlBody(activeBody: BodyRow[]) {
+  return activeBody
+    .map((field) => `${encodeURIComponent(field.key.trim())}=${encodeURIComponent(field.value)}`)
+    .join('&');
+}
+
 function generateCurlCommand(method: string, url: string, headers: ParamRow[], bodyFields: BodyRow[]) {
   let curl = `curl -X ${method} "${url}"`;
-  
-  // Check if headers already contain content-type: application/json
-  const hasJsonHeader = headers.some(h => h.enabled && h.key.trim().toLowerCase() === 'content-type' && h.value.trim().toLowerCase().includes('json'));
-  
-  for (const h of headers) {
-    if (h.enabled && h.key.trim() && h.value.trim()) {
-      curl += ` \\\n  -H "${h.key.trim()}: ${h.value.trim()}"`;
-    }
-  }
-  
-  const activeBody = bodyFields.filter(f => f.enabled && f.key.trim());
-  if (method !== 'GET' && activeBody.length > 0) {
-    const hasJsonField = bodyFields.some(f => f.enabled && f.key.trim() && f.type === 'json');
-    const isJson = hasJsonHeader || hasJsonField;
 
-    if (isJson) {
-      const obj: Record<string, any> = {};
-      for (const f of activeBody) {
-        const key = f.key.trim();
-        if (f.type === 'json') {
-          try {
-            obj[key] = JSON.parse(f.value);
-          } catch {
-            obj[key] = f.value;
-          }
-        } else {
-          const val = f.value.trim();
-          if (val === 'true') obj[key] = true;
-          else if (val === 'false') obj[key] = false;
-          else if (val === 'null') obj[key] = null;
-          else if (/^\d+$/.test(val)) obj[key] = Number.parseInt(val, 10);
-          else if (/^\d+\.\d+$/.test(val)) obj[key] = Number.parseFloat(val);
-          else obj[key] = f.value;
-        }
-      }
-      const jsonStr = JSON.stringify(obj);
+  const activeHeaders = headers.filter((header) => header.enabled && header.key.trim() && header.value.trim());
+  for (const header of activeHeaders) {
+    curl += stringifyHeaderArg(header);
+  }
+
+  const activeBody = bodyFields.filter((field) => field.enabled && field.key.trim());
+  if (method !== 'GET' && activeBody.length > 0) {
+    const hasJsonHeader = hasJsonContentType(headers);
+    const hasJsonField = activeBody.some((field) => field.type === 'json');
+
+    if (hasJsonHeader || hasJsonField) {
       if (!hasJsonHeader) {
-        curl += ` \\\n  -H "Content-Type: application/json"`;
+        curl += String.raw` \
+  -H "Content-Type: application/json"`;
       }
-      curl += ` \\\n  -d '${jsonStr}'`;
+      curl += ` \\\n  -d '${buildJsonCurlBody(activeBody)}'`;
     } else {
-      const dataStr = activeBody.map(f => `${encodeURIComponent(f.key.trim())}=${encodeURIComponent(f.value)}`).join('&');
-      curl += ` \\\n  -d "${dataStr}"`;
+      curl += ` \\\n  -d "${buildFormCurlBody(activeBody)}"`;
     }
   }
+
   return curl;
 }
 
@@ -728,15 +781,15 @@ function formatResponseBody(response: ResponseDto) {
   }
 
   if (isHtmlResponse(response)) {
-    const titleRe = /<title[^>]*>([\s\S]*?)<\/title>/i;
-    const headingRe = /<h1[^>]*>([\s\S]*?)<\/h1>/i;
+    const titleRe = /<title[^>]*>([^<]*)<\/title>/i;
+    const headingRe = /<h1[^>]*>([^<]*)<\/h1>/i;
     const titleMatch = titleRe.exec(response.body);
     const headingMatch = headingRe.exec(response.body);
     const title = decodeHtmlEntities((headingMatch?.[1] || titleMatch?.[1] || '').replace(/<[^>]+>/g, '').trim());
     const text = decodeHtmlEntities(
       response.body
-        .replace(/<script[\s\S]*?<\/script>/gi, '')
-        .replace(/<style[\s\S]*?<\/style>/gi, '')
+        .replace(/<script\b[^>]*>(?:[^<]+|<\(?!\/script>))*<\/script>/gi, '')
+        .replace(/<style\b[^>]*>(?:[^<]+|<\(?!\/style>))*<\/style>/gi, '')
         .replace(/<\/(p|div|h[1-6]|li|tr|br)>/gi, '\n')
         .replace(/<[^>]+>/g, ' ')
         .replace(/[ \t]+/g, ' ')
@@ -827,7 +880,8 @@ function slugFilename(value: string) {
     .trim()
     .toLowerCase()
     .replace(/[^a-z0-9_-]+/g, '-')
-    .replace(/^-+|-+$/g, '');
+    .replace(/^-+/, '')
+    .replace(/-+$/, '');
   return slug || 'workspace';
 }
 
@@ -855,6 +909,308 @@ function formattedJson(source: string) {
   }
 }
 
+function findingKey(finding: SecurityFindingPayload) {
+  return [
+    finding.endpoint,
+    finding.title,
+    finding.severity,
+    finding.risk_score,
+  ]
+    .filter(Boolean)
+    .join('::');
+}
+
+function endpointKey(endpoint: PerformanceEndpointPayload) {
+  return [
+    endpoint.endpoint,
+    endpoint.samples,
+    endpoint.avg_ms,
+    endpoint.max_ms,
+  ]
+    .filter((value) => value !== undefined && value !== null && value !== '')
+    .join('::');
+}
+
+function renderSecurityReportContent(parsedPayload: ReportPayload, fallbackSource: string) {
+  if (!parsedPayload.findings) {
+    return <JsonCode source={fallbackSource} />;
+  }
+
+  const severityColors: Record<string, string> = {
+    critical: 'rgba(239, 68, 68, 0.15)',
+    high: 'rgba(249, 115, 22, 0.15)',
+    medium: 'rgba(234, 179, 8, 0.15)',
+    low: 'rgba(59, 130, 246, 0.15)',
+  };
+  const textColors: Record<string, string> = {
+    critical: 'var(--color-delete)',
+    high: '#f97316',
+    medium: 'var(--color-post)',
+    low: 'var(--color-put)',
+  };
+
+  return (
+    <div className="tab-content" style={{ padding: '20px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '16px' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <span style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>
+          Source: <strong>{parsedPayload.source}</strong> | Live Scan: <strong>{parsedPayload.live_scan ? 'Yes' : 'No'}</strong>
+        </span>
+        <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
+          Generated: {parsedPayload.generated_at ? new Date(parsedPayload.generated_at).toLocaleString() : ''}
+        </span>
+      </div>
+
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+        {parsedPayload.findings.length === 0 ? (
+          <div style={{ padding: '24px', textAlign: 'center', backgroundColor: 'var(--bg-secondary)', borderRadius: '8px', border: '1px solid var(--border-color)', color: 'var(--text-muted)' }}>
+            No security findings detected for this source.
+          </div>
+        ) : (
+          parsedPayload.findings.map((finding) => {
+            const severity = finding.severity?.toLowerCase() || '';
+            const color = textColors[severity] || 'var(--text-secondary)';
+            return (
+              <div
+                key={findingKey(finding)}
+                style={{
+                  backgroundColor: 'var(--bg-secondary)',
+                  border: '1px solid var(--border-color)',
+                  borderRadius: '8px',
+                  overflow: 'hidden',
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 16px', borderBottom: '1px solid var(--border-color)' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                    <span
+                      style={{
+                        fontSize: '10px',
+                        fontWeight: '700',
+                        textTransform: 'uppercase',
+                        padding: '2px 6px',
+                        borderRadius: '4px',
+                        backgroundColor: severityColors[severity] || 'var(--bg-hover)',
+                        color,
+                      }}
+                    >
+                      {finding.severity}
+                    </span>
+                    <strong style={{ fontSize: '14px', color: 'var(--text-primary)' }}>{finding.title}</strong>
+                  </div>
+                  <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
+                    Risk Score: <strong style={{ color }}>{finding.risk_score}</strong>
+                  </span>
+                </div>
+
+                <div style={{ padding: '16px', display: 'flex', flexDirection: 'column', gap: '10px', fontSize: '13px', lineHeight: '1.5' }}>
+                  <div>
+                    <span style={{ color: 'var(--text-muted)', display: 'block', fontSize: '11px', textTransform: 'uppercase', fontWeight: '600' }}>Endpoint / Target</span>
+                    <code style={{ color: 'var(--text-secondary)', fontFamily: 'monospace' }}>{finding.endpoint}</code>
+                  </div>
+                  <div>
+                    <span style={{ color: 'var(--text-muted)', display: 'block', fontSize: '11px', textTransform: 'uppercase', fontWeight: '600' }}>Impact</span>
+                    <p style={{ color: 'var(--text-secondary)' }}>{finding.impact}</p>
+                  </div>
+                  <div>
+                    <span style={{ color: 'var(--text-muted)', display: 'block', fontSize: '11px', textTransform: 'uppercase', fontWeight: '600' }}>Remediation</span>
+                    <p style={{ color: 'var(--text-primary)', fontWeight: '500' }}>{finding.remediation}</p>
+                  </div>
+                  {finding.evidence && (
+                    <div>
+                      <span style={{ color: 'var(--text-muted)', display: 'block', fontSize: '11px', textTransform: 'uppercase', fontWeight: '600' }}>Evidence</span>
+                      <pre style={{ backgroundColor: 'var(--bg-primary)', padding: '8px 12px', borderRadius: '4px', fontFamily: 'monospace', fontSize: '12px', border: '1px solid var(--border-color)', overflowX: 'auto', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}><code>{finding.evidence}</code></pre>
+                    </div>
+                  )}
+                </div>
+              </div>
+            );
+          })
+        )}
+      </div>
+    </div>
+  );
+}
+
+function renderPerformanceReportContent(parsedPayload: ReportPayload, fallbackSource: string) {
+  if (!parsedPayload.endpoints) {
+    return <JsonCode source={fallbackSource} />;
+  }
+
+  return (
+    <div className="tab-content" style={{ padding: '20px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '16px' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <span style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>
+          Source: <strong>{parsedPayload.source}</strong> | Iterations: <strong>{parsedPayload.iterations}</strong>
+        </span>
+        <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
+          Generated: {parsedPayload.generated_at ? new Date(parsedPayload.generated_at).toLocaleString() : ''}
+        </span>
+      </div>
+
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+        {parsedPayload.endpoints.map((endpoint) => (
+          <div key={endpointKey(endpoint)} style={{ backgroundColor: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: '8px', padding: '16px' }}>
+            <h4 style={{ fontSize: '14px', fontWeight: '600', marginBottom: '12px', fontFamily: 'monospace', color: 'var(--text-primary)', wordBreak: 'break-all' }}>{endpoint.endpoint}</h4>
+
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(100px, 1fr))', gap: '12px', marginBottom: '16px' }}>
+              <div style={{ padding: '8px', backgroundColor: 'var(--bg-primary)', borderRadius: '6px', textAlign: 'center' }}>
+                <span style={{ fontSize: '10px', color: 'var(--text-muted)', textTransform: 'uppercase' }}>Samples</span>
+                <div style={{ fontSize: '15px', fontWeight: 'bold' }}>{endpoint.samples}</div>
+              </div>
+              <div style={{ padding: '8px', backgroundColor: 'var(--bg-primary)', borderRadius: '6px', textAlign: 'center' }}>
+                <span style={{ fontSize: '10px', color: 'var(--text-muted)', textTransform: 'uppercase' }}>Success</span>
+                <div style={{ fontSize: '15px', fontWeight: 'bold', color: 'var(--color-get)' }}>{endpoint.success_count}</div>
+              </div>
+              <div style={{ padding: '8px', backgroundColor: 'var(--bg-primary)', borderRadius: '6px', textAlign: 'center' }}>
+                <span style={{ fontSize: '10px', color: 'var(--text-muted)', textTransform: 'uppercase' }}>Errors</span>
+                <div style={{ fontSize: '15px', fontWeight: 'bold', color: (endpoint.error_count || 0) > 0 ? 'var(--color-delete)' : 'var(--text-muted)' }}>{endpoint.error_count}</div>
+              </div>
+              <div style={{ padding: '8px', backgroundColor: 'var(--bg-primary)', borderRadius: '6px', textAlign: 'center' }}>
+                <span style={{ fontSize: '10px', color: 'var(--text-muted)', textTransform: 'uppercase' }}>Avg Size</span>
+                <div style={{ fontSize: '15px', fontWeight: 'bold' }}>{endpoint.avg_size_bytes} B</div>
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+              <span style={{ fontSize: '10px', textTransform: 'uppercase', color: 'var(--text-muted)', fontWeight: '600' }}>Latency Distribution</span>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: '6px' }}>
+                {[
+                  ['Min', endpoint.min_ms],
+                  ['P50', endpoint.p50_ms],
+                  ['Avg', endpoint.avg_ms],
+                  ['P95', endpoint.p95_ms],
+                  ['Max', endpoint.max_ms],
+                ].map(([label, value]) => (
+                  <div key={`${endpointKey(endpoint)}-${label}`} style={{ padding: '8px', backgroundColor: 'rgba(79, 70, 229, 0.08)', border: '1px solid var(--border-color)', borderRadius: '6px', textAlign: 'center' }}>
+                    <span style={{ fontSize: '9px', color: 'var(--text-muted)', textTransform: 'uppercase' }}>{label}</span>
+                    <div style={{ fontSize: '13px', fontWeight: '600', color: label === 'Avg' ? 'var(--accent-hover)' : undefined }}>{value} ms</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function renderDocsReportContent(parsedPayload: ReportPayload, fallbackSource: string) {
+  if (!parsedPayload.format) {
+    return <JsonCode source={fallbackSource} />;
+  }
+
+  return (
+    <div className="tab-content" style={{ padding: '20px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '16px' }}>
+      <div style={{ backgroundColor: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: '8px', padding: '20px', display: 'flex', flexDirection: 'column', gap: '16px' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <h3 style={{ fontSize: '16px', fontWeight: 'bold' }}>API Documentation Spec</h3>
+          <span style={{ fontSize: '10px', fontWeight: '700', textTransform: 'uppercase', padding: '2px 8px', borderRadius: '4px', backgroundColor: 'var(--accent-light)', color: 'var(--accent-hover)' }}>
+            {parsedPayload.format}
+          </span>
+        </div>
+
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', fontSize: '13px' }}>
+          <div>
+            <span style={{ color: 'var(--text-muted)', display: 'block', fontSize: '11px', textTransform: 'uppercase', fontWeight: '600' }}>Source Collection</span>
+            <strong style={{ color: 'var(--text-primary)' }}>{parsedPayload.source}</strong>
+          </div>
+          <div>
+            <span style={{ color: 'var(--text-muted)', display: 'block', fontSize: '11px', textTransform: 'uppercase', fontWeight: '600' }}>Endpoints Documented</span>
+            <strong style={{ color: 'var(--text-primary)' }}>{parsedPayload.request_count} endpoints</strong>
+          </div>
+          <div>
+            <span style={{ color: 'var(--text-muted)', display: 'block', fontSize: '11px', textTransform: 'uppercase', fontWeight: '600' }}>Generated Output File Path</span>
+            <code style={{ display: 'block', padding: '10px', backgroundColor: 'var(--bg-primary)', borderRadius: '6px', border: '1px solid var(--border-color)', color: 'var(--text-secondary)', fontFamily: 'monospace', wordBreak: 'break-all' }}>{parsedPayload.output_path}</code>
+          </div>
+          <div>
+            <span style={{ color: 'var(--text-muted)', display: 'block', fontSize: '11px', textTransform: 'uppercase', fontWeight: '600' }}>Timestamp</span>
+            <span style={{ color: 'var(--text-secondary)' }}>{parsedPayload.generated_at ? new Date(parsedPayload.generated_at).toLocaleString() : ''}</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function renderHttpTraceReportContent(report: ReportDto, parsedPayload: ReportPayload | null, selectedMeta: ReportMeta) {
+  if (!parsedPayload) {
+    return <JsonCode source={report.payload_json} />;
+  }
+
+  return (
+    <div className="tab-content" style={{ padding: '20px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '16px' }}>
+      <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap' }}>
+        <div style={{ padding: '12px', backgroundColor: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: '8px', minWidth: '120px' }}>
+          <div style={{ fontSize: '10px', color: 'var(--text-muted)', textTransform: 'uppercase' }}>Method</div>
+          <div style={{ fontSize: '16px', fontWeight: 'bold', color: parsedPayload.method ? `var(--color-${parsedPayload.method.toLowerCase()})` : 'var(--text-primary)' }}>
+            {parsedPayload.method || 'GET'}
+          </div>
+        </div>
+        <div style={{ padding: '12px', backgroundColor: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: '8px', minWidth: '120px' }}>
+          <div style={{ fontSize: '10px', color: 'var(--text-muted)', textTransform: 'uppercase' }}>Status</div>
+          <div style={{ fontSize: '16px', fontWeight: 'bold', color: (parsedPayload.status || 0) < 400 ? 'var(--color-get)' : 'var(--color-delete)' }}>
+            {parsedPayload.status} {parsedPayload.reason}
+          </div>
+        </div>
+        <div style={{ padding: '12px', backgroundColor: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: '8px', minWidth: '120px' }}>
+          <div style={{ fontSize: '10px', color: 'var(--text-muted)', textTransform: 'uppercase' }}>Duration</div>
+          <div style={{ fontSize: '16px', fontWeight: 'bold', color: 'var(--color-put)' }}>{parsedPayload.elapsed_ms} ms</div>
+        </div>
+        <div style={{ padding: '12px', backgroundColor: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: '8px', minWidth: '120px' }}>
+          <div style={{ fontSize: '10px', color: 'var(--text-muted)', textTransform: 'uppercase' }}>Size</div>
+          <div style={{ fontSize: '16px', fontWeight: 'bold' }}>{parsedPayload.size_bytes} B</div>
+        </div>
+      </div>
+
+      <div className="history-detail-grid">
+        <div>
+          <span>Request URL</span>
+          <code>{selectedMeta.url || report.name}</code>
+        </div>
+        <div>
+          <span>Final URL</span>
+          <code>{selectedMeta.final_url || selectedMeta.url || report.name}</code>
+        </div>
+        <div>
+          <span>Content Type</span>
+          <code>{selectedMeta.content_type || 'unknown'}</code>
+        </div>
+      </div>
+
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+        <span style={{ fontSize: '11px', textTransform: 'uppercase', color: 'var(--text-muted)', fontWeight: '600' }}>Response Body</span>
+        <div className="response-body-wrapper" style={{ borderRadius: '8px', border: '1px solid var(--border-color)' }}>
+          {isJsonText(parsedPayload.body) ? (
+            <JsonCode source={parsedPayload.body || ''} />
+          ) : (
+            <pre className="response-body-pre"><code>{parsedPayload.body}</code></pre>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ReportDetailsContent({ report }: Readonly<{ report: ReportDto }>) {
+  const parsedPayload = parseReportPayload(report);
+  const selectedMeta = reportMeta(report);
+  const moduleName = report.module.toLowerCase();
+
+  if (!parsedPayload) {
+    return <JsonCode source={report.payload_json} />;
+  }
+  if (moduleName === 'security') {
+    return renderSecurityReportContent(parsedPayload, report.payload_json);
+  }
+  if (moduleName === 'performance') {
+    return renderPerformanceReportContent(parsedPayload, report.payload_json);
+  }
+  if (moduleName === 'docs') {
+    return renderDocsReportContent(parsedPayload, report.payload_json);
+  }
+  return renderHttpTraceReportContent(report, parsedPayload, selectedMeta);
+}
+
 /** Classify a JSON token into a CSS class name for syntax highlighting. */
 function classifyJsonToken(token: string, nextChar: string): string {
   if (token.startsWith('"')) return nextChar === ':' ? 'json-key' : 'json-string';
@@ -865,10 +1221,10 @@ function classifyJsonToken(token: string, nextChar: string): string {
 }
 
 // Regex sub-patterns kept short to stay below the SonarQube complexity limit
-const JSON_STRING_PAT = '"(?:\\\\u[\\da-fA-F]{4}|\\\\[^u]|[^\\\\"])*"';
-const JSON_NUMBER_PAT = '-?\\d+(?:\\.\\d+)?(?:[eE][+-]?\\d+)?';
+const JSON_STRING_PAT = String.raw`"(?:\\u[\da-fA-F]{4}|\\[^u]|[^\\"])*"`;
+const JSON_NUMBER_PAT = String.raw`-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?`;
 const JSON_TOKEN_RE = new RegExp(
-  `(${JSON_STRING_PAT}|${JSON_NUMBER_PAT}|true|false|null|[{}[\\],:`  + '\\]])',
+  String.raw`(${JSON_STRING_PAT}|${JSON_NUMBER_PAT}|true|false|null|[{}[\],:\]])`,
   'g'
 );
 
@@ -910,68 +1266,45 @@ function JsonCode({ source }: Readonly<{ source: string }>) {
   );
 }
 
+function normalizedPathSegments(value: string, separator: string) {
+  return value.split(separator).map((segment) => segment.trim()).filter(Boolean);
+}
+
+function findOrCreateRequestChild(parent: RequestTreeNode, name: string, path: string, isFolder: boolean) {
+  let child = parent.children.find((node) => node.name === name);
+  if (!child) {
+    child = { name, path, isFolder, children: [], requests: [] };
+    parent.children.push(child);
+  } else if (isFolder) {
+    child.isFolder = true;
+  }
+  return child;
+}
+
+function addRequestSegments(root: RequestTreeNode, segments: string[], request?: RequestDto) {
+  let current = root;
+  let currentPath = '';
+
+  segments.forEach((segment, index) => {
+    currentPath = currentPath ? `${currentPath} / ${segment}` : segment;
+    const isLeaf = index === segments.length - 1;
+    const child = findOrCreateRequestChild(current, segment, currentPath, !isLeaf || !request);
+    if (isLeaf && request) {
+      child.requests.push(request);
+    }
+    current = child;
+  });
+}
+
 function buildRequestTree(requests: RequestDto[], emptyFolders: string[] = []): RequestTreeNode[] {
   const root: RequestTreeNode = { name: '', path: '', isFolder: true, children: [], requests: [] };
 
-  const ensurePath = (folderPath: string) => {
-    const segments = folderPath.split('/').map(s => s.trim()).filter(Boolean);
-    let current = root;
-    let currentPath = '';
-    for (const seg of segments) {
-      currentPath = currentPath ? `${currentPath} / ${seg}` : seg;
-      let child = current.children.find(c => c.name === seg);
-      if (!child) {
-        child = {
-          name: seg,
-          path: currentPath,
-          isFolder: true,
-          children: [],
-          requests: []
-        };
-        current.children.push(child);
-      }
-      current = child;
-    }
-  };
-
   for (const ef of emptyFolders) {
-    ensurePath(ef);
+    addRequestSegments(root, normalizedPathSegments(ef, '/'));
   }
 
   for (const req of requests) {
-    const name = req.name || 'Untitled Request';
-    const segments = name.split('/').map(s => s.trim()).filter(Boolean);
-    
-    let current = root;
-    let currentPath = '';
-    let segIndex = 0;
-    
-    for (const seg of segments) {
-      currentPath = currentPath ? `${currentPath} / ${seg}` : seg;
-      
-      const isLast = segIndex === segments.length - 1;
-      let child = current.children.find(c => c.name === seg);
-      if (child) {
-        if (!isLast) {
-          child.isFolder = true;
-        }
-      } else {
-        child = {
-          name: seg,
-          path: currentPath,
-          isFolder: !isLast,
-          children: [],
-          requests: []
-        };
-        current.children.push(child);
-      }
-      
-      if (isLast) {
-        child.requests.push(req);
-      }
-      current = child;
-      segIndex++;
-    }
+    addRequestSegments(root, normalizedPathSegments(req.name || 'Untitled Request', '/'), req);
   }
 
   const sortTree = (nodes: RequestTreeNode[]) => {
@@ -1179,9 +1512,9 @@ export default function App() {
   const [requestName, setRequestName] = useState("New Request");
   const [requestMethod, setRequestMethod] = useState("GET");
   const [requestUrl, setRequestUrl] = useState("");
-  const [queryParams, setQueryParams] = useState<ParamRow[]>([{ key: '', value: '', enabled: true }]);
-  const [headers, setHeaders] = useState<ParamRow[]>([{ key: '', value: '', enabled: true }]);
-  const [bodyFields, setBodyFields] = useState<BodyRow[]>([{ key: '', value: '', type: 'string', enabled: true }]);
+  const [queryParams, setQueryParams] = useState<ParamRow[]>([createParamRow()]);
+  const [headers, setHeaders] = useState<ParamRow[]>([createParamRow()]);
+  const [bodyFields, setBodyFields] = useState<BodyRow[]>([createBodyRow()]);
   const [authType, setAuthType] = useState("none");
   const [authToken, setAuthToken] = useState("");
   const [requestTab, setRequestTab] = useState("params");
@@ -1513,6 +1846,7 @@ export default function App() {
           });
           if (report.passed) passed++; else failed++;
         } catch (e) {
+          console.error(`Failed to execute test case '${tc.name}'`, e);
           results.push({
             case_name: tc.name,
             passed: false,
@@ -1683,7 +2017,8 @@ export default function App() {
   };
 
   const handleCreateRequestInFolder = async (folderPath: string) => {
-    const defaultName = `${folderPath} / Request ${Date.now().toString().slice(-4)}`;
+    const nextRequestNumber = (currentWorkspace?.requests.length ?? 0) + 1;
+    const defaultName = `${folderPath} / Request ${nextRequestNumber}`;
     try {
       const saved = await invoke<RequestDto>('save_request', {
         payload: {
@@ -1751,7 +2086,7 @@ export default function App() {
         }
       }
       
-      if (activeRequest && activeRequest.id === req.id) {
+      if (activeRequest?.id === req.id) {
         setActiveRequest(saved);
         setRequestName(newName);
       }
@@ -1820,7 +2155,7 @@ export default function App() {
       
       setCustomEmptyFolders(prev => prev.filter(f => f !== folderPath && !f.startsWith(folderPath + ' / ')));
       
-      const activeDeleted = requestsToDelete.some(r => activeRequest && r.id === activeRequest.id);
+      const activeDeleted = requestsToDelete.some((r) => r.id === activeRequest?.id);
       if (activeDeleted) {
         setActiveRequest(null);
         setResponse(null);
@@ -1933,10 +2268,10 @@ export default function App() {
         setRequestMethod(parsed.method);
         setRequestUrl(parsed.url);
         if (parsed.headers.length > 0) {
-          setHeaders(parsed.headers.map(h => ({ key: h.key, value: h.value, enabled: true })));
+          setHeaders(parsed.headers.map((h) => createParamRow({ key: h.key, value: h.value, enabled: true })));
         }
         if (parsed.bodyFields.length > 0) {
-          setBodyFields(parsed.bodyFields.map(f => ({ key: f.key, value: f.value, type: 'string', enabled: true })));
+          setBodyFields(parsed.bodyFields.map((f) => createBodyRow({ key: f.key, value: f.value, type: 'string', enabled: true })));
         }
         if (parsed.headers.length > 0) {
           setRequestTab('headers');
@@ -1983,14 +2318,14 @@ export default function App() {
     const updated = [...queryParams];
     updated[index] = { ...updated[index], [field]: value };
     if (index === updated.length - 1 && updated[index].key.trim()) {
-      updated.push({ key: '', value: '', enabled: true });
+      updated.push(createParamRow());
     }
     setQueryParams(updated);
   };
 
   const deleteQueryParam = (index: number) => {
     if (queryParams.length <= 1) {
-      setQueryParams([{ key: '', value: '', enabled: true }]);
+      setQueryParams([createParamRow()]);
     } else {
       setQueryParams(queryParams.filter((_, i) => i !== index));
     }
@@ -2000,14 +2335,14 @@ export default function App() {
     const updated = [...headers];
     updated[index] = { ...updated[index], [field]: value };
     if (index === updated.length - 1 && updated[index].key.trim()) {
-      updated.push({ key: '', value: '', enabled: true });
+      updated.push(createParamRow());
     }
     setHeaders(updated);
   };
 
   const deleteHeader = (index: number) => {
     if (headers.length <= 1) {
-      setHeaders([{ key: '', value: '', enabled: true }]);
+      setHeaders([createParamRow()]);
     } else {
       setHeaders(headers.filter((_, i) => i !== index));
     }
@@ -2017,14 +2352,14 @@ export default function App() {
     const updated = [...bodyFields];
     updated[index] = { ...updated[index], [field]: value };
     if (index === updated.length - 1 && updated[index].key.trim()) {
-      updated.push({ key: '', value: '', type: 'string', enabled: true });
+      updated.push(createBodyRow());
     }
     setBodyFields(updated);
   };
 
   const deleteBodyField = (index: number) => {
     if (bodyFields.length <= 1) {
-      setBodyFields([{ key: '', value: '', type: 'string', enabled: true }]);
+      setBodyFields([createBodyRow()]);
     } else {
       setBodyFields(bodyFields.filter((_, i) => i !== index));
     }
@@ -2032,20 +2367,21 @@ export default function App() {
 
   const currentWorkspace = workspaces.find(w => w.name === activeWorkspaceName);
 
-  // Filtered requests based on search query
-  const filteredRequests = currentWorkspace
-    ? currentWorkspace.requests.filter(r => 
-        r.name.toLowerCase().includes(searchQuery.toLowerCase()) || 
-        r.url.toLowerCase().includes(searchQuery.toLowerCase())
-      )
-    : [];
-
-  const requestTree = useMemo(() => {
+  const requestTree = (() => {
+    const filteredRequests = currentWorkspace
+      ? currentWorkspace.requests.filter((request) => {
+          const normalizedQuery = searchQuery.toLowerCase();
+          return (
+            request.name.toLowerCase().includes(normalizedQuery) ||
+            request.url.toLowerCase().includes(normalizedQuery)
+          );
+        })
+      : [];
     const filteredEmpty = searchQuery 
       ? customEmptyFolders.filter(f => f.toLowerCase().includes(searchQuery.toLowerCase()))
       : customEmptyFolders;
     return buildRequestTree(filteredRequests, filteredEmpty);
-  }, [filteredRequests, customEmptyFolders, searchQuery]);
+  })();
 
   const suiteTree = useMemo(() => buildSuiteTree(testCases), [testCases]);
 
@@ -2098,8 +2434,6 @@ export default function App() {
       <div key={pathKey} style={{ display: 'flex', flexDirection: 'column' }}>
         <div 
           className={`request-tree-item ${dragOverFolder === pathKey ? 'drag-over-folder' : ''}`}
-          role="button"
-          tabIndex={0}
           style={{ 
             display: 'flex', 
             justifyContent: 'space-between', 
@@ -2109,15 +2443,6 @@ export default function App() {
             height: '32px',
             backgroundColor: dragOverFolder === pathKey ? 'var(--accent-light)' : undefined,
             border: dragOverFolder === pathKey ? '1px dashed var(--accent-color)' : undefined,
-          }}
-          onClick={() => {
-            setExpandedRequestFolders(prev => ({ ...prev, [pathKey]: !isExpanded }));
-          }}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' || e.key === ' ') {
-              e.preventDefault();
-              setExpandedRequestFolders(prev => ({ ...prev, [pathKey]: !isExpanded }));
-            }
           }}
           onDragOver={(e) => {
             e.preventDefault();
@@ -2146,17 +2471,15 @@ export default function App() {
             }
           }}
         >
-          <div style={{ display: 'flex', alignItems: 'center', gap: '6px', minWidth: 0, flex: 1 }}>
-            <button 
-              className="icon-btn" 
-              style={{ padding: '2px', cursor: 'pointer' }}
-              onClick={(e) => {
-                e.stopPropagation();
-                setExpandedRequestFolders(prev => ({ ...prev, [pathKey]: !isExpanded }));
-              }}
-            >
+          <button
+            type="button"
+            className="request-tree-left"
+            onClick={() => setExpandedRequestFolders(prev => ({ ...prev, [pathKey]: !isExpanded }))}
+            style={{ display: 'flex', alignItems: 'center', gap: '6px', minWidth: 0, flex: 1, background: 'none', border: 'none', color: 'inherit', padding: 0, textAlign: 'left', cursor: 'pointer' }}
+          >
+            <span className="icon-btn" style={{ padding: '2px', cursor: 'pointer' }}>
               {isExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-            </button>
+            </span>
             <Folder size={14} style={{ color: 'var(--accent-hover)' }} />
             <span className="request-name" style={{ fontSize: '13px', cursor: 'pointer' }} title={node.name}>
               {node.name}
@@ -2164,10 +2487,11 @@ export default function App() {
             <span style={{ fontSize: '11px', color: 'var(--text-muted)', fontWeight: 'normal' }}>
               ({totalReqs})
             </span>
-          </div>
+          </button>
           
           <div style={{ display: 'flex', gap: '4px', marginRight: '6px' }}>
             <button 
+              type="button"
               className="icon-btn"
               onClick={(e) => {
                 e.stopPropagation();
@@ -2179,6 +2503,7 @@ export default function App() {
               <Plus size={12} />
             </button>
             <button 
+              type="button"
               className="icon-btn delete-btn-hover"
               onClick={(e) => {
                 e.stopPropagation();
@@ -2204,28 +2529,12 @@ export default function App() {
   const renderRequestLeafNode = (node: RequestTreeNode, depth: number) => {
     const req = node.requests[0];
     if (!req) return null;
-    const isActive = activeRequest && activeRequest.id === req.id;
+    const isActive = activeRequest?.id === req.id;
     const lastRun = latestReportByRequest.get(historyKey(req.method, req.url));
     return (
       <div 
         key={req.id || req.name} 
         className={`request-tree-item ${isActive ? 'active' : ''}`}
-        role="button"
-        tabIndex={0}
-        onClick={() => loadRequestDetails(req)}
-        onKeyDown={(e) => {
-          if (e.key === 'Enter' || e.key === ' ') {
-            e.preventDefault();
-            loadRequestDetails(req);
-          }
-        }}
-        draggable={true}
-        onDragStart={(e) => {
-          if (req.id) {
-            e.dataTransfer.setData("requestId", req.id);
-            e.dataTransfer.effectAllowed = 'move';
-          }
-        }}
         style={{ 
           display: 'flex', 
           justifyContent: 'space-between', 
@@ -2235,12 +2544,24 @@ export default function App() {
           cursor: 'grab'
         }}
       >
-        <div className="request-tree-left" style={{ minWidth: 0, flex: 1 }}>
+        <button
+          type="button"
+          className="request-tree-left"
+          onClick={() => loadRequestDetails(req)}
+          draggable={true}
+          onDragStart={(e) => {
+            if (req.id) {
+              e.dataTransfer.setData("requestId", req.id);
+              e.dataTransfer.effectAllowed = 'move';
+            }
+          }}
+          style={{ minWidth: 0, flex: 1, display: 'flex', alignItems: 'center', gap: '8px', background: 'none', border: 'none', color: 'inherit', padding: 0, textAlign: 'left', cursor: 'pointer' }}
+        >
           <span className={`method-tag method-${req.method.toLowerCase()}`} style={{ fontSize: '9px', minWidth: '38px', padding: '1px 3px' }}>
             {req.method}
           </span>
           <span className="request-name" style={{ fontSize: '12px' }} title={req.name}>{req.name.split('/').pop()?.trim()}</span>
-        </div>
+        </button>
         <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
           {lastRun && (
             <div className="request-last-run" style={{ fontSize: '11px' }}>
@@ -2250,6 +2571,7 @@ export default function App() {
             </div>
           )}
           <button 
+            type="button"
             className="icon-btn delete-btn-hover" 
             onClick={(e) => {
               e.stopPropagation();
@@ -2311,8 +2633,6 @@ export default function App() {
           <div key={pathKey} style={{ display: 'flex', flexDirection: 'column' }}>
             <div 
               className={`request-tree-item ${isSuiteActive ? 'active' : ''}`}
-              role="button"
-              tabIndex={0}
               style={{ 
                 display: 'flex', 
                 justifyContent: 'space-between', 
@@ -2321,31 +2641,19 @@ export default function App() {
                 fontWeight: '600',
                 height: '32px'
               }}
-              onClick={() => {
-                setSelectedSuitePath(node.path);
-                setSelectedTestCase(null);
-                setSuiteReport(null);
-              }}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' || e.key === ' ') {
-                  e.preventDefault();
+            >
+              <button
+                type="button"
+                onClick={() => {
                   setSelectedSuitePath(node.path);
                   setSelectedTestCase(null);
                   setSuiteReport(null);
-                }
-              }}
-            >
-              <div style={{ display: 'flex', alignItems: 'center', gap: '6px', minWidth: 0, flex: 1 }}>
-                <button 
-                  className="icon-btn" 
-                  style={{ padding: '2px', cursor: 'pointer' }}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setExpandedFolders(prev => ({ ...prev, [pathKey]: !isExpanded }));
-                  }}
-                >
+                }}
+                style={{ display: 'flex', alignItems: 'center', gap: '6px', minWidth: 0, flex: 1, background: 'none', border: 'none', color: 'inherit', padding: 0, textAlign: 'left', cursor: 'pointer' }}
+              >
+                <span className="icon-btn" style={{ padding: '2px', cursor: 'pointer' }}>
                   {isExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-                </button>
+                </span>
                 <Folder size={14} style={{ color: 'var(--accent-hover)' }} />
                 <span className="request-name" style={{ fontSize: '13px', cursor: 'pointer' }} title={node.name}>
                   {node.name}
@@ -2353,10 +2661,22 @@ export default function App() {
                 <span style={{ fontSize: '11px', color: 'var(--text-muted)', fontWeight: 'normal' }}>
                   ({totalCases})
                 </span>
-              </div>
+              </button>
               
               <div style={{ display: 'flex', gap: '2px' }}>
                 <button 
+                  type="button"
+                  className="icon-btn"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setExpandedFolders(prev => ({ ...prev, [pathKey]: !isExpanded }));
+                  }}
+                  title={isExpanded ? 'Collapse Folder' : 'Expand Folder'}
+                >
+                  {isExpanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+                </button>
+                <button 
+                  type="button"
                   className="icon-btn"
                   onClick={(e) => {
                     e.stopPropagation();
@@ -2369,6 +2689,7 @@ export default function App() {
                   <Play size={12} fill="currentColor" style={{ color: 'var(--color-get)' }} />
                 </button>
                 <button 
+                  type="button"
                   className="icon-btn"
                   onClick={(e) => {
                     e.stopPropagation();
@@ -2384,42 +2705,37 @@ export default function App() {
             {isExpanded && (
               <div style={{ display: 'flex', flexDirection: 'column' }}>
                 {renderSuiteTree(node.children, depth + 1)}
-                {node.cases.map((tc, idx) => {
-                  const isActive = selectedTestCase && selectedTestCase.suite === tc.suite && selectedTestCase.name === tc.name;
+                {node.cases.map((tc) => {
+                  const isActive = selectedTestCase?.suite === tc.suite && selectedTestCase?.name === tc.name;
                   return (
-                    <div 
-                      key={idx}
+                    <div
+                      key={`${tc.suite}-${tc.name}`}
                       className={`request-tree-item ${isActive ? 'active' : ''}`}
-                      role="button"
-                      tabIndex={0}
-                      onClick={() => {
-                        setSelectedTestCase(tc);
-                        setSelectedSuitePath(null);
-                        setRunReport(null);
+                      style={{
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        alignItems: 'center',
+                        paddingLeft: `${(depth + 1) * 12 + 18}px`,
+                        height: '32px',
                       }}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter' || e.key === ' ') {
-                          e.preventDefault();
+                    >
+                      <button
+                        type="button"
+                        onClick={() => {
                           setSelectedTestCase(tc);
                           setSelectedSuitePath(null);
                           setRunReport(null);
-                        }
-                      }}
-                      style={{ 
-                        display: 'flex', 
-                        justifyContent: 'space-between', 
-                        alignItems: 'center', 
-                        paddingLeft: `${(depth + 1) * 12 + 18}px`,
-                        height: '32px'
-                      }}
-                    >
-                      <div className="request-tree-left" style={{ minWidth: 0, flex: 1 }}>
+                        }}
+                        className="request-tree-left"
+                        style={{ minWidth: 0, flex: 1, display: 'flex', alignItems: 'center', gap: '8px', background: 'none', border: 'none', color: 'inherit', padding: 0, textAlign: 'left', cursor: 'pointer' }}
+                      >
                         <span className={`method-tag method-${tc.method.toLowerCase()}`} style={{ fontSize: '9px', minWidth: '38px', padding: '1px 3px' }}>
                           {tc.method}
                         </span>
                         <span className="request-name" style={{ fontSize: '12px' }} title={tc.name}>{tc.name}</span>
-                      </div>
+                      </button>
                       <button 
+                        type="button"
                         className="icon-btn delete-btn-hover" 
                         onClick={(e) => {
                           e.stopPropagation();
@@ -2444,7 +2760,7 @@ export default function App() {
   };
 
   const renderReportItem = (rep: ReportDto) => {
-    const isActive = selectedReport && selectedReport.id === rep.id;
+    const isActive = selectedReport?.id === rep.id;
     const meta = reportMeta(rep);
     const methodLabel = meta.method || rep.module;
     
@@ -2473,19 +2789,12 @@ export default function App() {
     }
 
     return (
-      <div 
+      <button
+        type="button"
         key={rep.id} 
         className={`request-tree-item ${isActive ? 'active' : ''}`}
-        role="button"
-        tabIndex={0}
         onClick={() => setSelectedReport(rep)}
-        onKeyDown={(e) => {
-          if (e.key === 'Enter' || e.key === ' ') {
-            e.preventDefault();
-            setSelectedReport(rep);
-          }
-        }}
-        style={{ flexDirection: 'column', alignItems: 'flex-start', gap: '4px', padding: '10px' }}
+        style={{ flexDirection: 'column', alignItems: 'flex-start', gap: '4px', padding: '10px', width: '100%', background: 'none', border: 'none', color: 'inherit', textAlign: 'left' }}
       >
         <div style={{ display: 'flex', width: '100%', justifyContent: 'space-between', alignItems: 'center' }}>
           <span 
@@ -2513,7 +2822,7 @@ export default function App() {
           {typeof meta.size_bytes === 'number' && <span>{formatBytes(meta.size_bytes)}</span>}
         </div>
         <span style={{ fontSize: '11px', color: 'var(--text-muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', width: '100%' }}>{rep.summary}</span>
-      </div>
+      </button>
     );
   };
 
@@ -2832,7 +3141,7 @@ export default function App() {
                           <span></span>
                         </div>
                         {queryParams.map((row, idx) => (
-                          <div key={idx} className="kv-row">
+                          <div key={row.id} className="kv-row">
                             <input type="text" placeholder="key" className="kv-input" value={row.key} onChange={(e) => updateQueryParam(idx, 'key', e.target.value)} />
                             <input type="text" placeholder="value" className="kv-input" value={row.value} onChange={(e) => updateQueryParam(idx, 'value', e.target.value)} />
                             <button className="icon-btn" onClick={() => deleteQueryParam(idx)}><Trash size={14} /></button>
@@ -2849,7 +3158,7 @@ export default function App() {
                           <span></span>
                         </div>
                         {headers.map((row, idx) => (
-                          <div key={idx} className="kv-row">
+                          <div key={row.id} className="kv-row">
                             <input type="text" placeholder="key" className="kv-input" value={row.key} onChange={(e) => updateHeader(idx, 'key', e.target.value)} />
                             <input type="text" placeholder="value" className="kv-input" value={row.value} onChange={(e) => updateHeader(idx, 'value', e.target.value)} />
                             <button className="icon-btn" onClick={() => deleteHeader(idx)}><Trash size={14} /></button>
@@ -2885,7 +3194,7 @@ export default function App() {
                           <span></span>
                         </div>
                         {bodyFields.map((row, idx) => (
-                          <div key={idx} className="kv-row" style={{ gridTemplateColumns: '1.2fr 1.5fr 80px 40px' }}>
+                          <div key={row.id} className="kv-row" style={{ gridTemplateColumns: '1.2fr 1.5fr 80px 40px' }}>
                             <input type="text" placeholder="key" className="kv-input" value={row.key} onChange={(e) => updateBodyField(idx, 'key', e.target.value)} />
                             <input type="text" placeholder="value" className="kv-input" value={row.value} onChange={(e) => updateBodyField(idx, 'value', e.target.value)} />
                             <select className="toolbar-select" value={row.type} onChange={(e) => updateBodyField(idx, 'type', e.target.value as BodyRow['type'])} style={{ minWidth: 'auto', padding: '6px 8px' }}>
@@ -3017,8 +3326,8 @@ export default function App() {
                             </tr>
                           </thead>
                           <tbody>
-                            {response.headers.map((h, i) => (
-                              <tr key={i}>
+                            {response.headers.map((h) => (
+                              <tr key={`${h.key}-${h.value}`}>
                                 <td style={{ fontWeight: '500', color: 'var(--text-secondary)' }}>{h.key}</td>
                                 <td>{h.value}</td>
                               </tr>
@@ -3030,11 +3339,11 @@ export default function App() {
                     {responseTab === 'tests' && response.test_results && (
                       <div style={{ padding: '20px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '8px' }}>
                         <h4 style={{ fontSize: '11px', textTransform: 'uppercase', color: 'var(--text-muted)', fontWeight: '600', marginBottom: '8px' }}>JavaScript Assertions Checklist</h4>
-                        {response.test_results.map((res, i) => {
-                          const isPass = res.startsWith("PASS:");
+                        {response.test_results.map((res) => {
+                          const isPass = res.startsWith('PASS:');
                           const cleanText = res.substring(5).trim();
                           return (
-                            <div key={i} className={`assertion-item ${isPass ? 'passed' : 'failed'}`}>
+                            <div key={res} className={`assertion-item ${isPass ? 'passed' : 'failed'}`}>
                               <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
                                 {isPass ? (
                                   <CheckCircle2 size={16} style={{ color: 'var(--color-get)' }} />
@@ -3095,28 +3404,20 @@ export default function App() {
                 </button>
               </div>
               <div className="request-tree-container">
-                <div 
+                <button
+                  type="button"
                   className={`request-tree-item ${(!selectedTestCase && !selectedSuitePath) ? 'active' : ''}`}
-                  role="button"
-                  tabIndex={0}
                   style={{ display: 'flex', alignItems: 'center', gap: '6px', fontWeight: '600', height: '32px', marginBottom: '8px', paddingLeft: '6px' }}
                   onClick={() => {
                     setSelectedTestCase(null);
                     setSelectedSuitePath(null);
                     setSuiteReport(null);
                   }}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' || e.key === ' ') {
-                      e.preventDefault();
-                      setSelectedTestCase(null);
-                      setSelectedSuitePath(null);
-                      setSuiteReport(null);
-                    }
-                  }}
+                  
                 >
                   <ShieldCheck size={14} style={{ color: 'var(--accent-hover)' }} />
                   <span className="request-name" style={{ fontSize: '13px' }}>Dashboard Overview</span>
-                </div>
+                </button>
 
                 {suiteTree.length === 0 ? (
                   <div style={{ padding: '24px 16px', textAlign: 'center', color: 'var(--text-muted)', fontSize: '13px' }}>
@@ -3153,8 +3454,8 @@ export default function App() {
                         {selectedTestCase.items.length === 0 ? (
                           <span style={{ fontSize: '12px', color: 'var(--text-muted)' }}>No arguments</span>
                         ) : (
-                          selectedTestCase.items.map((it, i) => (
-                            <span key={i} style={{ fontSize: '11px', fontFamily: 'monospace', padding: '4px 8px', backgroundColor: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: '4px' }}>{it}</span>
+                          selectedTestCase.items.map((it) => (
+                            <span key={it} style={{ fontSize: '11px', fontFamily: 'monospace', padding: '4px 8px', backgroundColor: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: '4px' }}>{it}</span>
                           ))
                         )}
                       </div>
@@ -3175,14 +3476,14 @@ export default function App() {
                             <span style={{ fontWeight: '600', color: 'var(--color-put)' }}>{selectedTestCase.max_time_ms} ms</span>
                           </div>
                         )}
-                        {selectedTestCase.expect_headers && selectedTestCase.expect_headers.map((h, i) => (
-                          <div key={i} style={{ display: 'flex', justifyContent: 'space-between', padding: '8px', backgroundColor: 'var(--bg-secondary)', borderRadius: '6px' }}>
+                        {selectedTestCase.expect_headers?.map((h) => (
+                          <div key={h} style={{ display: 'flex', justifyContent: 'space-between', padding: '8px', backgroundColor: 'var(--bg-secondary)', borderRadius: '6px' }}>
                             <span style={{ color: 'var(--text-secondary)' }}>Expect Header HeaderName</span>
                             <span style={{ fontFamily: 'monospace' }}>{h}</span>
                           </div>
                         ))}
-                        {selectedTestCase.expect_body_contains && selectedTestCase.expect_body_contains.map((c, i) => (
-                          <div key={i} style={{ display: 'flex', justifyContent: 'space-between', padding: '8px', backgroundColor: 'var(--bg-secondary)', borderRadius: '6px' }}>
+                        {selectedTestCase.expect_body_contains?.map((c) => (
+                          <div key={c} style={{ display: 'flex', justifyContent: 'space-between', padding: '8px', backgroundColor: 'var(--bg-secondary)', borderRadius: '6px' }}>
                             <span style={{ color: 'var(--text-secondary)' }}>Expect Body Contains String</span>
                             <span style={{ fontFamily: 'monospace', color: 'var(--color-post)' }}>"{c}"</span>
                           </div>
@@ -3209,24 +3510,15 @@ export default function App() {
                     <div>
                       <h3 style={{ fontSize: '14px', fontWeight: '600', marginBottom: '10px', color: 'var(--text-primary)' }}>Test Cases in Suite Folder</h3>
                       <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                        {testCases.filter(tc => tc.suite === selectedSuitePath || tc.suite.startsWith(selectedSuitePath + ' / ')).map((tc, i) => (
-                          <div 
-                            key={i} 
-                            role="button"
-                            tabIndex={0}
+                        {testCases.filter(tc => tc.suite === selectedSuitePath || tc.suite.startsWith(selectedSuitePath + ' / ')).map((tc) => (
+                          <button
+                            type="button"
+                            key={`${tc.suite}-${tc.name}`}
                             style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px 14px', backgroundColor: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: '6px', cursor: 'pointer' }}
                             onClick={() => {
                               setSelectedTestCase(tc);
                               setSelectedSuitePath(null);
                               setRunReport(null);
-                            }}
-                            onKeyDown={(e) => {
-                              if (e.key === 'Enter' || e.key === ' ') {
-                                e.preventDefault();
-                                setSelectedTestCase(tc);
-                                setSelectedSuitePath(null);
-                                setRunReport(null);
-                              }
                             }}
                           >
                             <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
@@ -3234,7 +3526,7 @@ export default function App() {
                               <span style={{ fontWeight: '500', fontSize: '13px' }}>{tc.name}</span>
                             </div>
                             <span style={{ fontFamily: 'monospace', fontSize: '12px', color: 'var(--text-muted)' }}>{tc.url}</span>
-                          </div>
+                          </button>
                         ))}
                       </div>
                     </div>
@@ -3364,8 +3656,8 @@ export default function App() {
 
                         <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
                           <h4 style={{ fontSize: '11px', textTransform: 'uppercase', color: 'var(--text-muted)', fontWeight: '600' }}>Evaluation Checklist</h4>
-                          {runReport.assertions.map((ass, i) => (
-                            <div key={i} className={`assertion-item ${ass.passed ? 'passed' : 'failed'}`}>
+                          {runReport.assertions.map((ass) => (
+                            <div key={`${ass.assertion}-${ass.details}`} className={`assertion-item ${ass.passed ? 'passed' : 'failed'}`}>
                               <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
                                 <span style={{ fontSize: '13px', fontWeight: '500', color: 'var(--text-primary)' }}>{ass.assertion}</span>
                                 <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>{ass.details}</span>
@@ -3442,9 +3734,9 @@ export default function App() {
 
                         <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
                           <h4 style={{ fontSize: '11px', textTransform: 'uppercase', color: 'var(--text-muted)', fontWeight: '600' }}>Suite Cases</h4>
-                          {suiteReport.cases.map((c, i) => (
+                          {suiteReport.cases.map((c) => (
                             <div 
-                              key={i} 
+                              key={c.case_name} 
                               className={`assertion-item ${c.passed ? 'passed' : 'failed'}`}
                               style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 12px' }}
                             >
@@ -3516,280 +3808,7 @@ export default function App() {
                     </div>
                   </div>
 
-                  {(() => {
-                    const parsedPayload = parseReportPayload(selectedReport);
-                    const selectedMeta = reportMeta(selectedReport);
-
-                    const modLower = selectedReport.module.toLowerCase();
-                    if (modLower === 'security') {
-                      return (
-                        <div className="tab-content" style={{ padding: '20px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '16px' }}>
-                          {parsedPayload && parsedPayload.findings ? (
-                            <>
-                              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                                <span style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>
-                                  Source: <strong>{parsedPayload.source}</strong> | Live Scan: <strong>{parsedPayload.live_scan ? "Yes" : "No"}</strong>
-                                </span>
-                                <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
-                                  Generated: {parsedPayload.generated_at ? new Date(parsedPayload.generated_at).toLocaleString() : ''}
-                                </span>
-                              </div>
-
-                              <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                                {parsedPayload.findings.length === 0 ? (
-                                  <div style={{ padding: '24px', textAlign: 'center', backgroundColor: 'var(--bg-secondary)', borderRadius: '8px', border: '1px solid var(--border-color)', color: 'var(--text-muted)' }}>
-                                    No security findings detected for this source.
-                                  </div>
-                                ) : (
-                                  parsedPayload.findings.map((f, idx: number) => {
-                                    const severityColors: Record<string, string> = {
-                                      critical: 'rgba(239, 68, 68, 0.15)',
-                                      high: 'rgba(249, 115, 22, 0.15)',
-                                      medium: 'rgba(234, 179, 8, 0.15)',
-                                      low: 'rgba(59, 130, 246, 0.15)',
-                                    };
-                                    const textColors: Record<string, string> = {
-                                      critical: 'var(--color-delete)',
-                                      high: '#f97316',
-                                      medium: 'var(--color-post)',
-                                      low: 'var(--color-put)',
-                                    };
-                                    const severity = f.severity?.toLowerCase() || '';
-                                    return (
-                                      <div 
-                                        key={`${f.endpoint || 'finding'}-${f.title || ''}-${idx}`} 
-                                        style={{ 
-                                          backgroundColor: 'var(--bg-secondary)', 
-                                          border: '1px solid var(--border-color)', 
-                                          borderRadius: '8px', 
-                                          overflow: 'hidden' 
-                                        }}
-                                      >
-                                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 16px', borderBottom: '1px solid var(--border-color)' }}>
-                                          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                                            <span 
-                                              style={{ 
-                                                fontSize: '10px', 
-                                                fontWeight: '700', 
-                                                textTransform: 'uppercase', 
-                                                padding: '2px 6px', 
-                                                borderRadius: '4px',
-                                                backgroundColor: severityColors[severity] || 'var(--bg-hover)',
-                                                color: textColors[severity] || 'var(--text-secondary)'
-                                              }}
-                                            >
-                                              {f.severity}
-                                            </span>
-                                            <strong style={{ fontSize: '14px', color: 'var(--text-primary)' }}>{f.title}</strong>
-                                          </div>
-                                          <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>Risk Score: <strong style={{ color: textColors[severity] }}>{f.risk_score}</strong></span>
-                                        </div>
-                                        
-                                        <div style={{ padding: '16px', display: 'flex', flexDirection: 'column', gap: '10px', fontSize: '13px', lineHeight: '1.5' }}>
-                                          <div>
-                                            <span style={{ color: 'var(--text-muted)', display: 'block', fontSize: '11px', textTransform: 'uppercase', fontWeight: '600' }}>Endpoint / Target</span>
-                                            <code style={{ color: 'var(--text-secondary)', fontFamily: 'monospace' }}>{f.endpoint}</code>
-                                          </div>
-                                          <div>
-                                            <span style={{ color: 'var(--text-muted)', display: 'block', fontSize: '11px', textTransform: 'uppercase', fontWeight: '600' }}>Impact</span>
-                                            <p style={{ color: 'var(--text-secondary)' }}>{f.impact}</p>
-                                          </div>
-                                          <div>
-                                            <span style={{ color: 'var(--text-muted)', display: 'block', fontSize: '11px', textTransform: 'uppercase', fontWeight: '600' }}>Remediation</span>
-                                            <p style={{ color: 'var(--text-primary)', fontWeight: '500' }}>{f.remediation}</p>
-                                          </div>
-                                          {f.evidence && (
-                                            <div>
-                                              <span style={{ color: 'var(--text-muted)', display: 'block', fontSize: '11px', textTransform: 'uppercase', fontWeight: '600' }}>Evidence</span>
-                                              <pre style={{ backgroundColor: 'var(--bg-primary)', padding: '8px 12px', borderRadius: '4px', fontFamily: 'monospace', fontSize: '12px', border: '1px solid var(--border-color)', overflowX: 'auto', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}><code>{f.evidence}</code></pre>
-                                            </div>
-                                          )}
-                                        </div>
-                                      </div>
-                                    );
-                                  })
-                                )}
-                              </div>
-                            </>
-                          ) : (
-                            <JsonCode source={selectedReport.payload_json} />
-                          )}
-                        </div>
-                      );
-                    }
-
-                    if (modLower === 'performance') {
-                      return (
-                        <div className="tab-content" style={{ padding: '20px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '16px' }}>
-                          {parsedPayload && parsedPayload.endpoints ? (
-                            <>
-                              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                                <span style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>
-                                  Source: <strong>{parsedPayload.source}</strong> | Iterations: <strong>{parsedPayload.iterations}</strong>
-                                </span>
-                                <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
-                                  Generated: {parsedPayload.generated_at ? new Date(parsedPayload.generated_at).toLocaleString() : ''}
-                                </span>
-                              </div>
-
-                              <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-                                {parsedPayload.endpoints.map((ep, idx: number) => (
-                                  <div key={ep.endpoint || `ep-${idx}`} style={{ backgroundColor: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: '8px', padding: '16px' }}>
-                                    <h4 style={{ fontSize: '14px', fontWeight: '600', marginBottom: '12px', fontFamily: 'monospace', color: 'var(--text-primary)', wordBreak: 'break-all' }}>{ep.endpoint}</h4>
-                                    
-                                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(100px, 1fr))', gap: '12px', marginBottom: '16px' }}>
-                                      <div style={{ padding: '8px', backgroundColor: 'var(--bg-primary)', borderRadius: '6px', textAlign: 'center' }}>
-                                        <span style={{ fontSize: '10px', color: 'var(--text-muted)', textTransform: 'uppercase' }}>Samples</span>
-                                        <div style={{ fontSize: '15px', fontWeight: 'bold' }}>{ep.samples}</div>
-                                      </div>
-                                      <div style={{ padding: '8px', backgroundColor: 'var(--bg-primary)', borderRadius: '6px', textAlign: 'center' }}>
-                                        <span style={{ fontSize: '10px', color: 'var(--text-muted)', textTransform: 'uppercase' }}>Success</span>
-                                        <div style={{ fontSize: '15px', fontWeight: 'bold', color: 'var(--color-get)' }}>{ep.success_count}</div>
-                                      </div>
-                                      <div style={{ padding: '8px', backgroundColor: 'var(--bg-primary)', borderRadius: '6px', textAlign: 'center' }}>
-                                        <span style={{ fontSize: '10px', color: 'var(--text-muted)', textTransform: 'uppercase' }}>Errors</span>
-                                        <div style={{ fontSize: '15px', fontWeight: 'bold', color: (ep.error_count || 0) > 0 ? 'var(--color-delete)' : 'var(--text-muted)' }}>{ep.error_count}</div>
-                                      </div>
-                                      <div style={{ padding: '8px', backgroundColor: 'var(--bg-primary)', borderRadius: '6px', textAlign: 'center' }}>
-                                        <span style={{ fontSize: '10px', color: 'var(--text-muted)', textTransform: 'uppercase' }}>Avg Size</span>
-                                        <div style={{ fontSize: '15px', fontWeight: 'bold' }}>{ep.avg_size_bytes} B</div>
-                                      </div>
-                                    </div>
-
-                                    <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                                      <span style={{ fontSize: '10px', textTransform: 'uppercase', color: 'var(--text-muted)', fontWeight: '600' }}>Latency Distribution</span>
-                                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: '6px' }}>
-                                        <div style={{ padding: '8px', backgroundColor: 'rgba(79, 70, 229, 0.08)', border: '1px solid var(--border-color)', borderRadius: '6px', textAlign: 'center' }}>
-                                          <span style={{ fontSize: '9px', color: 'var(--text-muted)', textTransform: 'uppercase' }}>Min</span>
-                                          <div style={{ fontSize: '13px', fontWeight: '600' }}>{ep.min_ms} ms</div>
-                                        </div>
-                                        <div style={{ padding: '8px', backgroundColor: 'rgba(79, 70, 229, 0.08)', border: '1px solid var(--border-color)', borderRadius: '6px', textAlign: 'center' }}>
-                                          <span style={{ fontSize: '9px', color: 'var(--text-muted)', textTransform: 'uppercase' }}>P50</span>
-                                          <div style={{ fontSize: '13px', fontWeight: '600' }}>{ep.p50_ms} ms</div>
-                                        </div>
-                                        <div style={{ padding: '8px', backgroundColor: 'rgba(79, 70, 229, 0.08)', border: '1px solid var(--border-color)', borderRadius: '6px', textAlign: 'center' }}>
-                                          <span style={{ fontSize: '9px', color: 'var(--text-muted)', textTransform: 'uppercase' }}>Avg</span>
-                                          <div style={{ fontSize: '13px', fontWeight: '600', color: 'var(--accent-hover)' }}>{ep.avg_ms} ms</div>
-                                        </div>
-                                        <div style={{ padding: '8px', backgroundColor: 'rgba(79, 70, 229, 0.08)', border: '1px solid var(--border-color)', borderRadius: '6px', textAlign: 'center' }}>
-                                          <span style={{ fontSize: '9px', color: 'var(--text-muted)', textTransform: 'uppercase' }}>P95</span>
-                                          <div style={{ fontSize: '13px', fontWeight: '600' }}>{ep.p95_ms} ms</div>
-                                        </div>
-                                        <div style={{ padding: '8px', backgroundColor: 'rgba(79, 70, 229, 0.08)', border: '1px solid var(--border-color)', borderRadius: '6px', textAlign: 'center' }}>
-                                          <span style={{ fontSize: '9px', color: 'var(--text-muted)', textTransform: 'uppercase' }}>Max</span>
-                                          <div style={{ fontSize: '13px', fontWeight: '600' }}>{ep.max_ms} ms</div>
-                                        </div>
-                                      </div>
-                                    </div>
-                                  </div>
-                                ))}
-                              </div>
-                            </>
-                          ) : (
-                            <JsonCode source={selectedReport.payload_json} />
-                          )}
-                        </div>
-                      );
-                    }
-
-                    if (modLower === 'docs') {
-                      return (
-                        <div className="tab-content" style={{ padding: '20px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '16px' }}>
-                          {parsedPayload ? (
-                            <div style={{ backgroundColor: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: '8px', padding: '20px', display: 'flex', flexDirection: 'column', gap: '16px' }}>
-                              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                                <h3 style={{ fontSize: '16px', fontWeight: 'bold' }}>API Documentation Spec</h3>
-                                <span style={{ fontSize: '10px', fontWeight: '700', textTransform: 'uppercase', padding: '2px 8px', borderRadius: '4px', backgroundColor: 'var(--accent-light)', color: 'var(--accent-hover)' }}>
-                                  {parsedPayload.format}
-                                </span>
-                              </div>
-
-                              <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', fontSize: '13px' }}>
-                                <div>
-                                  <span style={{ color: 'var(--text-muted)', display: 'block', fontSize: '11px', textTransform: 'uppercase', fontWeight: '600' }}>Source Collection</span>
-                                  <strong style={{ color: 'var(--text-primary)' }}>{parsedPayload.source}</strong>
-                                </div>
-                                <div>
-                                  <span style={{ color: 'var(--text-muted)', display: 'block', fontSize: '11px', textTransform: 'uppercase', fontWeight: '600' }}>Endpoints Documented</span>
-                                  <strong style={{ color: 'var(--text-primary)' }}>{parsedPayload.request_count} endpoints</strong>
-                                </div>
-                                <div>
-                                  <span style={{ color: 'var(--text-muted)', display: 'block', fontSize: '11px', textTransform: 'uppercase', fontWeight: '600' }}>Generated Output File Path</span>
-                                  <code style={{ display: 'block', padding: '10px', backgroundColor: 'var(--bg-primary)', borderRadius: '6px', border: '1px solid var(--border-color)', color: 'var(--text-secondary)', fontFamily: 'monospace', wordBreak: 'break-all' }}>{parsedPayload.output_path}</code>
-                                </div>
-                                <div>
-                                  <span style={{ color: 'var(--text-muted)', display: 'block', fontSize: '11px', textTransform: 'uppercase', fontWeight: '600' }}>Timestamp</span>
-                                  <span style={{ color: 'var(--text-secondary)' }}>{parsedPayload.generated_at ? new Date(parsedPayload.generated_at).toLocaleString() : ''}</span>
-                                </div>
-                              </div>
-                            </div>
-                          ) : (
-                            <JsonCode source={selectedReport.payload_json} />
-                          )}
-                        </div>
-                      );
-                    }
-
-                    // Default: HTTP Trace logs visualizer
-                    return (
-                      <div className="tab-content" style={{ padding: '20px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '16px' }}>
-                        {parsedPayload ? (
-                          <>
-                            <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap' }}>
-                              <div style={{ padding: '12px', backgroundColor: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: '8px', minWidth: '120px' }}>
-                                <div style={{ fontSize: '10px', color: 'var(--text-muted)', textTransform: 'uppercase' }}>Method</div>
-                                <div style={{ fontSize: '16px', fontWeight: 'bold', color: parsedPayload.method ? `var(--color-${parsedPayload.method.toLowerCase()})` : 'var(--text-primary)' }}>
-                                  {parsedPayload.method || 'GET'}
-                                </div>
-                              </div>
-                              <div style={{ padding: '12px', backgroundColor: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: '8px', minWidth: '120px' }}>
-                                <div style={{ fontSize: '10px', color: 'var(--text-muted)', textTransform: 'uppercase' }}>Status</div>
-                                <div style={{ fontSize: '16px', fontWeight: 'bold', color: (parsedPayload.status || 0) < 400 ? 'var(--color-get)' : 'var(--color-delete)' }}>
-                                  {parsedPayload.status} {parsedPayload.reason}
-                                </div>
-                              </div>
-                              <div style={{ padding: '12px', backgroundColor: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: '8px', minWidth: '120px' }}>
-                                <div style={{ fontSize: '10px', color: 'var(--text-muted)', textTransform: 'uppercase' }}>Duration</div>
-                                <div style={{ fontSize: '16px', fontWeight: 'bold', color: 'var(--color-put)' }}>{parsedPayload.elapsed_ms} ms</div>
-                              </div>
-                              <div style={{ padding: '12px', backgroundColor: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: '8px', minWidth: '120px' }}>
-                                <div style={{ fontSize: '10px', color: 'var(--text-muted)', textTransform: 'uppercase' }}>Size</div>
-                                <div style={{ fontSize: '16px', fontWeight: 'bold' }}>{parsedPayload.size_bytes} B</div>
-                              </div>
-                            </div>
-
-                            <div className="history-detail-grid">
-                              <div>
-                                <span>Request URL</span>
-                                <code>{selectedMeta.url || selectedReport.name}</code>
-                              </div>
-                              <div>
-                                <span>Final URL</span>
-                                <code>{selectedMeta.final_url || selectedMeta.url || selectedReport.name}</code>
-                              </div>
-                              <div>
-                                <span>Content Type</span>
-                                <code>{selectedMeta.content_type || 'unknown'}</code>
-                              </div>
-                            </div>
-
-                            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                              <span style={{ fontSize: '11px', textTransform: 'uppercase', color: 'var(--text-muted)', fontWeight: '600' }}>Response Body</span>
-                              <div className="response-body-wrapper" style={{ borderRadius: '8px', border: '1px solid var(--border-color)' }}>
-                                {isJsonText(parsedPayload.body) ? (
-                                  <JsonCode source={parsedPayload.body || ''} />
-                                ) : (
-                                  <pre className="response-body-pre"><code>{parsedPayload.body}</code></pre>
-                                )}
-                              </div>
-                            </div>
-                          </>
-                        ) : (
-                          <JsonCode source={selectedReport.payload_json} />
-                        )}
-                      </div>
-                    );
-                  })()}
+                  <ReportDetailsContent report={selectedReport} />
                 </>
               ) : (
                 <div className="response-idle-state" style={{ backgroundColor: 'var(--bg-primary)' }}>
