@@ -23,6 +23,7 @@ use zapreq::download::download;
 use zapreq::env_cmd::{get_profile, list_profiles, validate_profile};
 // egui desktop GUI removed, migrated to Tauri
 use zapreq::items::parse_request_items;
+use zapreq::items::RequestItem;
 use zapreq::notes::{
     add_note, list_notes, note_history, render_history, render_notes, update_note,
 };
@@ -36,9 +37,10 @@ use zapreq::regression::{
     render_latest_case_report, render_suite_report, run_suite,
 };
 use zapreq::request::{RequestEngine, RequestSpec};
-use zapreq::response::ResponseData;
+use zapreq::response::{RequestTrace, ResponseData};
 use zapreq::secrets::{get_secret, list_secret_keys, mask_secret, set_secret};
 use zapreq::security::{render_report as render_security_report, run_scan};
+use zapreq::sessions::SessionData;
 use zapreq::sessions::{
     apply_session_to_request, load_session, save_session, update_session_from_exchange,
 };
@@ -51,121 +53,17 @@ use zapreq::zapdocs::{generate_docs, render_report as render_docs_report};
 /// Main orchestration entrypoint with explicit contract wiring, isolated runtime state transitions, and exit-code handling.
 fn run() -> Result<i32> {
     let config = load_config().context("failed to load config")?;
-    let mut argv: Vec<String> = std::env::args().collect();
-    if should_launch_default_gui(&argv) {
-        println!("ZapReq Desktop GUI has been migrated to Tauri. Run the desktop app directly, or use `npm run tauri dev` / `cargo tauri dev` to start the GUI. Alternatively, run `zapreq tui` for the Terminal UI, or `zapreq --help` for help.");
-        return Ok(0);
-    }
-    if !is_raw_subcommand_invocation(&argv) {
-        merge_defaults(&config, &mut argv);
-    }
-    let mut args = parse_cli_from(argv).context("failed to parse CLI args")?;
-    let mut pending_test: Option<(TestOptions, String)> = None;
-
-    if let Some(command) = args.command.clone() {
-        match handle_subcommand_match(command, args, &config)? {
-            SubcommandOutcome::Exit(code) => return Ok(code),
-            SubcommandOutcome::RunRequest {
-                args: new_args,
-                pending_test: new_pending_test,
-            } => {
-                args = *new_args;
-                pending_test = new_pending_test;
-            }
-        }
-    }
-
-    if args.url.is_empty() {
-        return Err(anyhow!("URL is required unless using plugin subcommands"));
-    }
-
-    let env_map = if let Some(path) = args.env_file.as_deref() {
-        load_env_file(path).with_context(|| format!("failed to load env file: {path}"))?
-    } else {
-        HashMap::new()
+    let (mut args, pending_test) = match prepare_run_args(&config)? {
+        PreparedRun::Exit(code) => return Ok(code),
+        PreparedRun::Continue { args, pending_test } => (*args, pending_test),
     };
-
-    let mut resolved = CliResolved {
-        url: args.url.clone(),
-        request_items: args.request_items.clone(),
-        profile_headers: HashMap::new(),
-        variables: env_map,
-    };
-    if let Some(profile_name) = args.env_profile.as_deref() {
-        let profile = load_profile(profile_name)
-            .with_context(|| format!("failed to load env profile: {profile_name}"))?;
-        apply_profile(&profile, &mut resolved);
-    }
-
-    let resolved_url = substitute_placeholders(&resolved.url, &resolved.variables);
-    let mut resolved_items = resolved
-        .request_items
-        .iter()
-        .map(|raw| substitute_item_value(raw, &resolved.variables))
-        .collect::<Vec<_>>();
-    for (k, v) in &resolved.profile_headers {
-        resolved_items.push(format!(
-            "{}:{}",
-            substitute_placeholders(k, &resolved.variables),
-            substitute_placeholders(v, &resolved.variables)
-        ));
-    }
-    let unresolved = unresolved_placeholders(
-        std::iter::once(resolved_url.as_str())
-            .chain(resolved_items.iter().map(|s| s.as_str()))
-            .collect::<Vec<_>>()
-            .as_slice(),
-    );
-    if !unresolved.is_empty() {
-        return Err(anyhow!(
-            "unresolved variables: {} (set them via --env, --env-profile, or REQUEST_ITEMS)",
-            unresolved.join(", ")
-        ));
-    }
-    if args.download && args.continue_download {
-        if let Some(output_path) = args.output.as_deref() {
-            if let Ok(meta) = std::fs::metadata(output_path) {
-                let existing = meta.len();
-                if existing > 0 {
-                    resolved_items.push(format!("Range:bytes={existing}-"));
-                }
-            }
-        }
-    }
-
-    let usable_url = zapreq::utils::normalize_url(&resolved_url, &args.default_scheme)
-        .context("failed to build usable URL")?;
-
-    let mut request_items =
-        parse_request_items(&resolved_items).context("failed to parse REQUEST_ITEMS")?;
-
-    let loaded_session =
-        load_session(&usable_url, args.session.as_deref()).context("failed to load session")?;
-
-    if let Some((_, session_data)) = &loaded_session {
-        if args.verbose {
-            eprintln!(
-                "[session: loaded {} cookies, {} headers]",
-                session_data.cookies.len(),
-                session_data.headers.len()
-            );
-        }
-
-        apply_session_to_request(
-            &mut request_items,
-            &mut args.auth_type,
-            &mut args.auth,
-            session_data,
-        );
-    }
-
+    let PreparedRequestContext {
+        usable_url,
+        request_items,
+        loaded_session,
+    } = prepare_request_context(&mut args)?;
     let registry = AuthRegistry::with_defaults();
-    if args.auth.is_none() && !args.auth_type.eq_ignore_ascii_case("basic") {
-        eprintln!(
-            "warning: --auth-type={} provided without --auth; request sent without credentials",
-            args.auth_type
-        );
-    }
+    warn_if_auth_incomplete(&args);
     let auth_plugin = if let Some(credentials) = args.auth.as_deref() {
         registry
             .get(&args.auth_type)
@@ -184,63 +82,341 @@ fn run() -> Result<i32> {
     let engine = RequestEngine::new();
     let print_opts = build_print_opts(&args, &config);
 
-    if args.offline {
-        let prepared = engine
-            .prepare(&args, &spec, auth_plugin.as_deref())
-            .context("failed to prepare offline request")?;
-        let mut offline_opts = print_opts.clone();
-        offline_opts.request_headers = true;
-        offline_opts.request_body = true;
-        offline_opts.response_headers = false;
-        offline_opts.response_body = false;
-        zapreq::output::print_request(
-            &prepared.method,
-            &prepared.url,
-            &prepared.headers_preview,
-            prepared.body_preview.as_ref(),
-            &offline_opts,
-        );
-        println!(
-            "{}",
-            "[offline mode — request not sent]"
-                .color(offline_opts.theme.offline_msg)
-                .bold()
-        );
-        return Ok(0);
+    if let Some(code) =
+        maybe_run_offline_mode(&engine, &args, &spec, auth_plugin.as_deref(), &print_opts)?
+    {
+        return Ok(code);
+    }
+    if let Some(code) =
+        maybe_run_download_mode(&engine, &args, &spec, auth_plugin.as_deref(), &print_opts)?
+    {
+        return Ok(code);
     }
 
-    if args.download {
-        let started = Instant::now();
-        let (trace, response) = engine
-            .send_raw_for_download(&args, &spec, auth_plugin.as_deref())
-            .context("download request failed")?;
+    let executed = execute_request(&engine, &args, &spec, auth_plugin.as_deref())?;
+    record_http_report(&executed.trace, &executed.response, executed.elapsed_ms);
+    persist_session_updates(
+        loaded_session,
+        args.session_read_only,
+        &request_items,
+        &args.auth_type,
+        args.auth.as_deref(),
+        &executed.response,
+    )?;
 
-        let download_result =
-            download(response, &args, &print_opts.theme).context("download failed")?;
+    if let Some(code) = maybe_render_test_report(
+        pending_test,
+        &executed.trace,
+        &executed.response,
+        executed.elapsed_ms,
+    )? {
+        return Ok(code);
+    }
 
-        if args.verbose {
-            println!("Downloaded via {} {}", trace.method, trace.url);
-            println!("Saved to {}", download_result.filename);
-            println!(
-                "Bytes: {}  Duration: {:.2}s  Resumed: {}",
-                download_result.size,
-                download_result.duration.as_secs_f64(),
-                download_result.resumed
-            );
-            println!(
-                "Elapsed: {}",
-                humanize_duration(started.elapsed().as_millis() as u64)
-            );
+    render_standard_output(&args, &config, &executed)?;
+    Ok(final_status_code(&args, executed.response.status_code))
+}
+
+type PendingTest = Option<(TestOptions, String)>;
+type LoadedSession = Option<(std::path::PathBuf, SessionData)>;
+
+enum PreparedRun {
+    Exit(i32),
+    Continue {
+        args: Box<CliArgs>,
+        pending_test: PendingTest,
+    },
+}
+
+struct PreparedRequestContext {
+    usable_url: String,
+    request_items: Vec<RequestItem>,
+    loaded_session: LoadedSession,
+}
+
+struct ExecutedRequest {
+    trace: RequestTrace,
+    response: ResponseData,
+    elapsed_ms: u64,
+}
+
+fn prepare_run_args(config: &zapreq::config::Config) -> Result<PreparedRun> {
+    let mut argv: Vec<String> = std::env::args().collect();
+    if should_launch_default_gui(&argv) {
+        println!("ZapReq Desktop GUI has been migrated to Tauri. Run the desktop app directly, or use `npm run tauri dev` / `cargo tauri dev` to start the GUI. Alternatively, run `zapreq tui` for the Terminal UI, or `zapreq --help` for help.");
+        return Ok(PreparedRun::Exit(0));
+    }
+    if !is_raw_subcommand_invocation(&argv) {
+        merge_defaults(config, &mut argv);
+    }
+
+    let mut args = parse_cli_from(argv).context("failed to parse CLI args")?;
+    let mut pending_test = None;
+
+    if let Some(command) = args.command.clone() {
+        match handle_subcommand_match(command, args, config)? {
+            SubcommandOutcome::Exit(code) => return Ok(PreparedRun::Exit(code)),
+            SubcommandOutcome::RunRequest {
+                args: new_args,
+                pending_test: new_pending_test,
+            } => {
+                args = *new_args;
+                pending_test = new_pending_test;
+            }
         }
-        return Ok(0);
+    }
+
+    Ok(PreparedRun::Continue { args: Box::new(args), pending_test })
+}
+
+fn prepare_request_context(args: &mut CliArgs) -> Result<PreparedRequestContext> {
+    if args.url.is_empty() {
+        return Err(anyhow!("URL is required unless using plugin subcommands"));
+    }
+
+    let resolved_url = resolve_request_url(args)?;
+    let mut resolved_items = resolve_request_items(args)?;
+    append_resume_range_header(args, &mut resolved_items);
+
+    let usable_url = zapreq::utils::normalize_url(&resolved_url, &args.default_scheme)
+        .context("failed to build usable URL")?;
+    let mut request_items =
+        parse_request_items(&resolved_items).context("failed to parse REQUEST_ITEMS")?;
+    let loaded_session =
+        load_session(&usable_url, args.session.as_deref()).context("failed to load session")?;
+    apply_loaded_session(
+        &loaded_session,
+        &mut request_items,
+        &mut args.auth_type,
+        &mut args.auth,
+        args.verbose,
+    );
+
+    Ok(PreparedRequestContext {
+        usable_url,
+        request_items,
+        loaded_session,
+    })
+}
+
+fn resolve_request_url(args: &CliArgs) -> Result<String> {
+    let mut resolved = CliResolved {
+        url: args.url.clone(),
+        request_items: args.request_items.clone(),
+        profile_headers: HashMap::new(),
+        variables: load_env_variables(args)?,
+    };
+
+    if let Some(profile_name) = args.env_profile.as_deref() {
+        let profile = load_profile(profile_name)
+            .with_context(|| format!("failed to load env profile: {profile_name}"))?;
+        apply_profile(&profile, &mut resolved);
+    }
+
+    let resolved_url = substitute_placeholders(&resolved.url, &resolved.variables);
+    let resolved_items = collect_resolved_items(&resolved);
+    validate_unresolved_values(&resolved_url, &resolved_items)?;
+    Ok(resolved_url)
+}
+
+fn resolve_request_items(args: &CliArgs) -> Result<Vec<String>> {
+    let mut resolved = CliResolved {
+        url: args.url.clone(),
+        request_items: args.request_items.clone(),
+        profile_headers: HashMap::new(),
+        variables: load_env_variables(args)?,
+    };
+
+    if let Some(profile_name) = args.env_profile.as_deref() {
+        let profile = load_profile(profile_name)
+            .with_context(|| format!("failed to load env profile: {profile_name}"))?;
+        apply_profile(&profile, &mut resolved);
+    }
+
+    let resolved_url = substitute_placeholders(&resolved.url, &resolved.variables);
+    let resolved_items = collect_resolved_items(&resolved);
+    validate_unresolved_values(&resolved_url, &resolved_items)?;
+    Ok(resolved_items)
+}
+
+fn load_env_variables(args: &CliArgs) -> Result<HashMap<String, String>> {
+    if let Some(path) = args.env_file.as_deref() {
+        load_env_file(path).with_context(|| format!("failed to load env file: {path}"))
+    } else {
+        Ok(HashMap::new())
+    }
+}
+
+fn collect_resolved_items(resolved: &CliResolved) -> Vec<String> {
+    let mut resolved_items = resolved
+        .request_items
+        .iter()
+        .map(|raw| substitute_item_value(raw, &resolved.variables))
+        .collect::<Vec<_>>();
+
+    for (k, v) in &resolved.profile_headers {
+        resolved_items.push(format!(
+            "{}:{}",
+            substitute_placeholders(k, &resolved.variables),
+            substitute_placeholders(v, &resolved.variables)
+        ));
+    }
+
+    resolved_items
+}
+
+fn validate_unresolved_values(resolved_url: &str, resolved_items: &[String]) -> Result<()> {
+    let unresolved = unresolved_placeholders(
+        std::iter::once(resolved_url)
+            .chain(resolved_items.iter().map(String::as_str))
+            .collect::<Vec<_>>()
+            .as_slice(),
+    );
+    if unresolved.is_empty() {
+        return Ok(());
+    }
+
+    Err(anyhow!(
+        "unresolved variables: {} (set them via --env, --env-profile, or REQUEST_ITEMS)",
+        unresolved.join(", ")
+    ))
+}
+
+fn append_resume_range_header(args: &CliArgs, resolved_items: &mut Vec<String>) {
+    if !(args.download && args.continue_download) {
+        return;
+    }
+    let Some(output_path) = args.output.as_deref() else {
+        return;
+    };
+    let Ok(meta) = std::fs::metadata(output_path) else {
+        return;
+    };
+    let existing = meta.len();
+    if existing > 0 {
+        resolved_items.push(format!("Range:bytes={existing}-"));
+    }
+}
+
+fn apply_loaded_session(
+    loaded_session: &LoadedSession,
+    request_items: &mut Vec<RequestItem>,
+    auth_type: &mut String,
+    auth: &mut Option<String>,
+    verbose: bool,
+) {
+    let Some((_, session_data)) = loaded_session else {
+        return;
+    };
+
+    if verbose {
+        eprintln!(
+            "[session: loaded {} cookies, {} headers]",
+            session_data.cookies.len(),
+            session_data.headers.len()
+        );
+    }
+
+    apply_session_to_request(request_items, auth_type, auth, session_data);
+}
+
+fn warn_if_auth_incomplete(args: &CliArgs) {
+    if args.auth.is_none() && !args.auth_type.eq_ignore_ascii_case("basic") {
+        eprintln!(
+            "warning: --auth-type={} provided without --auth; request sent without credentials",
+            args.auth_type
+        );
+    }
+}
+
+fn maybe_run_offline_mode(
+    engine: &RequestEngine,
+    args: &CliArgs,
+    spec: &RequestSpec,
+    auth_plugin: Option<&dyn zapreq::auth::AuthPlugin>,
+    print_opts: &zapreq::output::PrintOpts,
+) -> Result<Option<i32>> {
+    if !args.offline {
+        return Ok(None);
+    }
+
+    let prepared = engine
+        .prepare(args, spec, auth_plugin)
+        .context("failed to prepare offline request")?;
+    let mut offline_opts = print_opts.clone();
+    offline_opts.request_headers = true;
+    offline_opts.request_body = true;
+    offline_opts.response_headers = false;
+    offline_opts.response_body = false;
+    zapreq::output::print_request(
+        &prepared.method,
+        &prepared.url,
+        &prepared.headers_preview,
+        prepared.body_preview.as_ref(),
+        &offline_opts,
+    );
+    println!(
+        "{}",
+        "[offline mode — request not sent]"
+            .color(offline_opts.theme.offline_msg)
+            .bold()
+    );
+    Ok(Some(0))
+}
+
+fn maybe_run_download_mode(
+    engine: &RequestEngine,
+    args: &CliArgs,
+    spec: &RequestSpec,
+    auth_plugin: Option<&dyn zapreq::auth::AuthPlugin>,
+    print_opts: &zapreq::output::PrintOpts,
+) -> Result<Option<i32>> {
+    if !args.download {
+        return Ok(None);
     }
 
     let started = Instant::now();
     let (trace, response) = engine
-        .send(&args, &spec, auth_plugin.as_deref())
-        .context("request execution failed")?;
-    let elapsed_ms = started.elapsed().as_millis() as u64;
+        .send_raw_for_download(args, spec, auth_plugin)
+        .context("download request failed")?;
+    let download_result = download(response, args, &print_opts.theme).context("download failed")?;
 
+    if args.verbose {
+        println!("Downloaded via {} {}", trace.method, trace.url);
+        println!("Saved to {}", download_result.filename);
+        println!(
+            "Bytes: {}  Duration: {:.2}s  Resumed: {}",
+            download_result.size,
+            download_result.duration.as_secs_f64(),
+            download_result.resumed
+        );
+        println!(
+            "Elapsed: {}",
+            humanize_duration(started.elapsed().as_millis() as u64)
+        );
+    }
+
+    Ok(Some(0))
+}
+
+fn execute_request(
+    engine: &RequestEngine,
+    args: &CliArgs,
+    spec: &RequestSpec,
+    auth_plugin: Option<&dyn zapreq::auth::AuthPlugin>,
+) -> Result<ExecutedRequest> {
+    let started = Instant::now();
+    let (trace, response) = engine
+        .send(args, spec, auth_plugin)
+        .context("request execution failed")?;
+    Ok(ExecutedRequest {
+        trace,
+        response,
+        elapsed_ms: started.elapsed().as_millis() as u64,
+    })
+}
+
+fn record_http_report(trace: &RequestTrace, response: &ResponseData, elapsed_ms: u64) {
     let _ = zapreq::localdb::record_http_report(
         "CLI",
         &trace.method,
@@ -254,62 +430,83 @@ fn run() -> Result<i32> {
         &response.headers,
         &String::from_utf8_lossy(&response.body),
     );
+}
 
-    if let Some((session_path, mut session_data)) = loaded_session {
-        if !args.session_read_only {
-            update_session_from_exchange(
-                &mut session_data,
-                &request_items,
-                &args.auth_type,
-                args.auth.as_deref(),
-                &response,
-            );
-            save_session(&session_path, &session_data).context("failed to save session")?;
-        }
+fn persist_session_updates(
+    loaded_session: LoadedSession,
+    session_read_only: bool,
+    request_items: &[RequestItem],
+    auth_type: &str,
+    auth: Option<&str>,
+    response: &ResponseData,
+) -> Result<()> {
+    let Some((session_path, mut session_data)) = loaded_session else {
+        return Ok(());
+    };
+    if session_read_only {
+        return Ok(());
     }
 
-    if let Some((test_opts, report_kind)) = pending_test {
-        let report =
-            evaluate_response(&trace.method, &trace.url, &response, elapsed_ms, &test_opts);
-        if report_kind.eq_ignore_ascii_case("json") {
-            let json =
-                serde_json::to_string_pretty(&report).context("failed to serialize test report")?;
-            println!("{json}");
-        } else {
-            print!("{}", render_text_report(&report));
-        }
-        return Ok(if report.passed { 0 } else { 1 });
-    }
+    update_session_from_exchange(&mut session_data, request_items, auth_type, auth, response);
+    save_session(&session_path, &session_data).context("failed to save session")
+}
 
-    render_exchange_from_cli(&trace, &response, &args, &config)
+fn maybe_render_test_report(
+    pending_test: PendingTest,
+    trace: &RequestTrace,
+    response: &ResponseData,
+    elapsed_ms: u64,
+) -> Result<Option<i32>> {
+    let Some((test_opts, report_kind)) = pending_test else {
+        return Ok(None);
+    };
+
+    let report = evaluate_response(&trace.method, &trace.url, response, elapsed_ms, &test_opts);
+    if report_kind.eq_ignore_ascii_case("json") {
+        let json =
+            serde_json::to_string_pretty(&report).context("failed to serialize test report")?;
+        println!("{json}");
+    } else {
+        print!("{}", render_text_report(&report));
+    }
+    Ok(Some(if report.passed { 0 } else { 1 }))
+}
+
+fn render_standard_output(
+    args: &CliArgs,
+    config: &zapreq::config::Config,
+    executed: &ExecutedRequest,
+) -> Result<()> {
+    render_exchange_from_cli(&executed.trace, &executed.response, args, config)
         .context("failed to render output")?;
     if args.verbose {
         if let Some(auth) = args.auth.as_deref() {
             eprintln!("Auth: {}", mask_auth(&args.auth_type, auth));
         }
     }
-
     if args.summary && !args.no_summary {
-        print_compact_summary(&trace, &response, elapsed_ms);
+        print_compact_summary(&executed.trace, &executed.response, executed.elapsed_ms);
     }
-
     if args.meta {
         print_meta_summary(
-            &trace.method,
-            &trace.url,
-            response.status_code,
-            &response.reason,
-            elapsed_ms,
-            &response,
-            infer_ssl_label(&trace.url, args.ssl.as_deref()),
+            &executed.trace.method,
+            &executed.trace.url,
+            executed.response.status_code,
+            &executed.response.reason,
+            executed.elapsed_ms,
+            &executed.response,
+            infer_ssl_label(&executed.trace.url, args.ssl.as_deref()),
         );
     }
+    Ok(())
+}
 
-    if args.check_status && response.status_code >= 400 {
-        return Ok(1);
+fn final_status_code(args: &CliArgs, status_code: u16) -> i32 {
+    if args.check_status && status_code >= 400 {
+        1
+    } else {
+        0
     }
-
-    Ok(0)
 }
 
 fn is_raw_subcommand_invocation(argv: &[String]) -> bool {
@@ -577,7 +774,9 @@ fn handle_plugins_cmd(
             return Ok(SubcommandOutcome::Exit(if issues == 0 { 0 } else { 1 }));
         }
         PluginCommand::Run { name, args } => {
-            return Ok(SubcommandOutcome::Exit(run_plugin_command(&name, &args, config)?));
+            return Ok(SubcommandOutcome::Exit(run_plugin_command(
+                &name, &args, config,
+            )?));
         }
     }
     Ok(SubcommandOutcome::Exit(0))
@@ -589,8 +788,7 @@ fn handle_save_cmd(
     config: &zapreq::config::Config,
 ) -> Result<SubcommandOutcome> {
     let saved = cli_from_saved_request_tokens(&request, config)?;
-    save_request(&alias, &saved)
-        .with_context(|| format!("failed to save collection '{alias}'"))?;
+    save_request(&alias, &saved).with_context(|| format!("failed to save collection '{alias}'"))?;
     println!("Saved request as '{alias}'");
     Ok(SubcommandOutcome::Exit(0))
 }
@@ -611,7 +809,10 @@ fn handle_run_cmd(
     config: &zapreq::config::Config,
 ) -> Result<SubcommandOutcome> {
     let new_args = build_args_from_collection(&alias, env_profile, config)?;
-    Ok(SubcommandOutcome::RunRequest { args: Box::new(new_args), pending_test: None })
+    Ok(SubcommandOutcome::RunRequest {
+        args: Box::new(new_args),
+        pending_test: None,
+    })
 }
 
 fn handle_list_cmd() -> Result<SubcommandOutcome> {
@@ -627,8 +828,7 @@ fn handle_list_cmd() -> Result<SubcommandOutcome> {
 }
 
 fn handle_delete_cmd(alias: String) -> Result<SubcommandOutcome> {
-    delete_request(&alias)
-        .with_context(|| format!("failed to delete collection '{alias}'"))?;
+    delete_request(&alias).with_context(|| format!("failed to delete collection '{alias}'"))?;
     println!("Deleted request '{alias}'");
     Ok(SubcommandOutcome::Exit(0))
 }
@@ -692,8 +892,7 @@ fn handle_ai_cmd(
         println!("Body fields: {}", generated.body.len());
     }
 
-    let mut synthetic =
-        vec!["zapreq".to_string(), method.clone(), generated.url.clone()];
+    let mut synthetic = vec!["zapreq".to_string(), method.clone(), generated.url.clone()];
     synthetic.extend(generated_items.clone());
     merge_defaults(config, &mut synthetic);
     let mut generated_cli =
@@ -703,9 +902,8 @@ fn handle_ai_cmd(
     }
 
     if let Some(alias) = save {
-        save_request(&alias, &generated_cli).with_context(|| {
-            format!("failed to save AI-generated request '{alias}'")
-        })?;
+        save_request(&alias, &generated_cli)
+            .with_context(|| format!("failed to save AI-generated request '{alias}'"))?;
         println!("Saved AI-generated request as '{alias}'");
     }
 
@@ -714,7 +912,10 @@ fn handle_ai_cmd(
         return Ok(SubcommandOutcome::Exit(0));
     }
 
-    Ok(SubcommandOutcome::RunRequest { args: Box::new(generated_cli), pending_test: None })
+    Ok(SubcommandOutcome::RunRequest {
+        args: Box::new(generated_cli),
+        pending_test: None,
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -746,7 +947,10 @@ fn handle_test_cmd(
         },
         report,
     ));
-    Ok(SubcommandOutcome::RunRequest { args: Box::new(parsed), pending_test })
+    Ok(SubcommandOutcome::RunRequest {
+        args: Box::new(parsed),
+        pending_test,
+    })
 }
 
 fn handle_env_cmd(command: EnvCommand) -> Result<SubcommandOutcome> {
@@ -762,15 +966,14 @@ fn handle_env_cmd(command: EnvCommand) -> Result<SubcommandOutcome> {
             }
         }
         EnvCommand::Show { name } => {
-            let profile =
-                get_profile(&name).with_context(|| format!("failed to show {name}"))?;
-            let text = serde_json::to_string_pretty(&profile)
-                .context("failed to serialize profile")?;
+            let profile = get_profile(&name).with_context(|| format!("failed to show {name}"))?;
+            let text =
+                serde_json::to_string_pretty(&profile).context("failed to serialize profile")?;
             println!("{text}");
         }
         EnvCommand::Validate { name } => {
-            let issues = validate_profile(&name)
-                .with_context(|| format!("failed to validate {name}"))?;
+            let issues =
+                validate_profile(&name).with_context(|| format!("failed to validate {name}"))?;
             if issues.is_empty() {
                 println!("Profile '{name}' is valid.");
             } else {
@@ -810,9 +1013,8 @@ fn handle_collections_cmd(command: CollectionsCommand) -> Result<SubcommandOutco
             );
         }
         CollectionsCommand::Import { name, path } => {
-            let ws = import_workspace(&name, &path).with_context(|| {
-                format!("failed to import workspace from '{}'", path)
-            })?;
+            let ws = import_workspace(&name, &path)
+                .with_context(|| format!("failed to import workspace from '{}'", path))?;
             println!(
                 "Imported workspace '{}' with {} request(s).",
                 ws.name,
@@ -858,13 +1060,12 @@ fn handle_requests_cmd(
             request,
             env_profile,
         } => {
-            let new_args = build_args_from_workspace_request(
-                &workspace,
-                &request,
-                env_profile,
-                config,
-            )?;
-            Ok(SubcommandOutcome::RunRequest { args: Box::new(new_args), pending_test: None })
+            let new_args =
+                build_args_from_workspace_request(&workspace, &request, env_profile, config)?;
+            Ok(SubcommandOutcome::RunRequest {
+                args: Box::new(new_args),
+                pending_test: None,
+            })
         }
         RequestsCommand::Save {
             workspace,
@@ -895,8 +1096,8 @@ fn handle_security_cmd(
             severity,
             live,
         } => {
-            let report = run_scan(&source, severity, live, config)
-                .context("security scan failed")?;
+            let report =
+                run_scan(&source, severity, live, config).context("security scan failed")?;
             print!("{}", render_security_report(&report));
         }
     }
@@ -945,8 +1146,8 @@ fn handle_regression_cmd(
             println!("Saved test case '{}' in suite '{}'.", name, suite);
         }
         RegressionCommand::List { suite } => {
-            let cases = list_test_cases(suite.as_deref())
-                .context("failed to list regression cases")?;
+            let cases =
+                list_test_cases(suite.as_deref()).context("failed to list regression cases")?;
             if cases.is_empty() {
                 println!("No regression test cases found.");
             } else {
@@ -959,14 +1160,16 @@ fn handle_regression_cmd(
             }
         }
         RegressionCommand::Run { suite } => {
-            let report = run_suite(&suite, config)
-                .context("failed to execute regression suite")?;
+            let report = run_suite(&suite, config).context("failed to execute regression suite")?;
             print!("{}", render_suite_report(&report));
-            return Ok(SubcommandOutcome::Exit(if report.failed == 0 { 0 } else { 1 }));
+            return Ok(SubcommandOutcome::Exit(if report.failed == 0 {
+                0
+            } else {
+                1
+            }));
         }
         RegressionCommand::Delete { suite, name } => {
-            let removed = delete_test_case(&suite, &name)
-                .context("failed to delete test case")?;
+            let removed = delete_test_case(&suite, &name).context("failed to delete test case")?;
             if removed {
                 println!("Deleted test case '{}' from suite '{}'.", name, suite);
             } else {
@@ -1008,8 +1211,8 @@ fn handle_notes_cmd(command: NotesCommand) -> Result<SubcommandOutcome> {
             tags,
             body,
         } => {
-            let note = add_note(&source, title.as_deref(), &body, &tags)
-                .context("failed to add note")?;
+            let note =
+                add_note(&source, title.as_deref(), &body, &tags).context("failed to add note")?;
             print!("{}", render_notes(&[note]));
         }
         NotesCommand::Update {
@@ -1018,8 +1221,8 @@ fn handle_notes_cmd(command: NotesCommand) -> Result<SubcommandOutcome> {
             tags,
             body,
         } => {
-            let note = update_note(id, title.as_deref(), &body, &tags)
-                .context("failed to update note")?;
+            let note =
+                update_note(id, title.as_deref(), &body, &tags).context("failed to update note")?;
             print!("{}", render_notes(&[note]));
         }
         NotesCommand::List { source, query } => {
@@ -1032,8 +1235,7 @@ fn handle_notes_cmd(command: NotesCommand) -> Result<SubcommandOutcome> {
             } else {
                 Some(&source)
             };
-            let notes =
-                list_notes(filter, query.as_deref()).context("failed to list notes")?;
+            let notes = list_notes(filter, query.as_deref()).context("failed to list notes")?;
             print!("{}", render_notes(&notes));
         }
         NotesCommand::History { id } => {
@@ -1047,13 +1249,12 @@ fn handle_notes_cmd(command: NotesCommand) -> Result<SubcommandOutcome> {
 fn handle_secrets_cmd(command: SecretCommand) -> Result<SubcommandOutcome> {
     match command {
         SecretCommand::Set { key, value } => {
-            set_secret(&key, &value)
-                .with_context(|| format!("failed to save secret '{key}'"))?;
+            set_secret(&key, &value).with_context(|| format!("failed to save secret '{key}'"))?;
             println!("Secret '{key}' saved.");
         }
         SecretCommand::Get { key, reveal } => {
-            let value = get_secret(&key)
-                .with_context(|| format!("failed to read secret '{key}'"))?;
+            let value =
+                get_secret(&key).with_context(|| format!("failed to read secret '{key}'"))?;
             match value {
                 Some(v) => {
                     if reveal {
@@ -1095,8 +1296,7 @@ fn handle_diff_cmd(
         cli_from_diff_tokens(&url_a, &request, config)?
     };
     diff_cli.command = None;
-    let result =
-        diff_requests(&url_a, &url_b, &diff_cli).context("diff command failed")?;
+    let result = diff_requests(&url_a, &url_b, &diff_cli).context("diff command failed")?;
     let opts = build_print_opts(&diff_cli, config);
     print_diff(&result, &opts.theme);
     Ok(SubcommandOutcome::Exit(0))
