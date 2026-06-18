@@ -593,7 +593,8 @@ where
         .method_or_url
         .ok_or_else(|| anyhow!("missing METHOD/URL positional arguments"))?;
 
-    let (method, url, request_items) = parse_positional_args(first, raw.maybe_url, raw.request_items);
+    let (method, url, request_items) =
+        parse_positional_args(first, raw.maybe_url, raw.request_items);
 
     Ok(CliArgs {
         method,
@@ -705,11 +706,7 @@ fn parse_positional_args(
 ) -> (String, String, Vec<String>) {
     if let Some(second_positional) = maybe_url {
         if looks_like_method(&first) {
-            (
-                first.to_ascii_uppercase(),
-                second_positional,
-                request_items,
-            )
+            (first.to_ascii_uppercase(), second_positional, request_items)
         } else {
             let mut items = Vec::with_capacity(1 + request_items.len());
             items.push(second_positional);
