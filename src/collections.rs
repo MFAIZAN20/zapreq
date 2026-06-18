@@ -357,8 +357,8 @@ pub fn import_workspace(name: &str, path: &str) -> Result<Workspace> {
     let path = validate_import_path(path)?;
     let raw = std::fs::read_to_string(&path)
         .with_context(|| format!("failed to read import file: {}", path.display()))?;
-    let value: Value =
-        serde_json::from_str(&raw).with_context(|| format!("failed to parse JSON: {}", path.display()))?;
+    let value: Value = serde_json::from_str(&raw)
+        .with_context(|| format!("failed to parse JSON: {}", path.display()))?;
 
     let ws = if value.get("requests").is_some() {
         let mut ws: Workspace =
@@ -430,7 +430,10 @@ pub fn export_workspace(
 
     let text = serde_json::to_string_pretty(&payload).context("failed to encode export JSON")?;
     let output_path = resolve_export_path(path, workspace_name, &format)?;
-    if let Some(parent) = output_path.parent().filter(|parent| !parent.as_os_str().is_empty()) {
+    if let Some(parent) = output_path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("failed to create export directory: {}", parent.display()))?;
     }
@@ -519,7 +522,11 @@ fn validate_import_path(raw: &str) -> Result<PathBuf> {
     Ok(path)
 }
 
-fn resolve_export_path(raw: &str, workspace_name: &str, format: &WorkspaceExportFormat) -> Result<PathBuf> {
+fn resolve_export_path(
+    raw: &str,
+    workspace_name: &str,
+    format: &WorkspaceExportFormat,
+) -> Result<PathBuf> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         return Err(anyhow!("export destination cannot be empty"));
@@ -531,7 +538,9 @@ fn resolve_export_path(raw: &str, workspace_name: &str, format: &WorkspaceExport
     }
 
     if path.file_name().is_none() {
-        return Err(anyhow!("export destination must be a file path or directory"));
+        return Err(anyhow!(
+            "export destination must be a file path or directory"
+        ));
     }
 
     Ok(path)
@@ -551,7 +560,11 @@ fn default_export_filename(workspace_name: &str, format: &WorkspaceExportFormat)
         .collect::<String>()
         .trim_matches('-')
         .to_string();
-    let slug = if slug.is_empty() { "workspace".to_string() } else { slug };
+    let slug = if slug.is_empty() {
+        "workspace".to_string()
+    } else {
+        slug
+    };
     format!("{slug}.{}", export_extension(format))
 }
 
