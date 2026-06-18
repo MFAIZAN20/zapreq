@@ -2957,6 +2957,7 @@ export default function App() {
           className={`request-tree-item ${dragOverFolder === pathKey ? 'drag-over-folder' : ''}`}
           aria-label={`Folder ${node.name}`}
           aria-expanded={isExpanded}
+          aria-selected={false}
           role="treeitem"
           tabIndex={0}
           style={{ 
@@ -4037,7 +4038,11 @@ export default function App() {
         <ResizeDivider isDragging={isResizingSidebar} onMouseDown={handleMouseDownSidebar} label="Resize reports sidebar" />
 
         <section className="request-pane">
-          {!selectedReport ? (
+          {selectedReport ? (
+            <div style={{ height: '100%', overflowY: 'auto' }}>
+              <ReportDetailsContent report={selectedReport} />
+            </div>
+          ) : (
             <div style={{ padding: '24px', display: 'flex', flexDirection: 'column', gap: '24px' }}>
               <div>
                 <h2 style={{ fontSize: '20px', fontWeight: '700', marginBottom: '8px', color: 'var(--text-primary)' }}>System History Metrics</h2>
@@ -4049,10 +4054,6 @@ export default function App() {
                 failed={failedReports.length} 
                 untested={0} 
               />
-            </div>
-          ) : (
-            <div style={{ height: '100%', overflowY: 'auto' }}>
-              <ReportDetailsContent report={selectedReport} />
             </div>
           )}
         </section>
