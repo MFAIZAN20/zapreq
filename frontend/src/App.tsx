@@ -2945,6 +2945,10 @@ export default function App() {
     return count;
   };
 
+  const toggleRequestFolder = (pathKey: string) => {
+    setExpandedRequestFolders((prev) => ({ ...prev, [pathKey]: !prev[pathKey] }));
+  };
+
   const renderRequestFolderNode = (node: RequestTreeNode, depth: number, isExpanded: boolean, pathKey: string) => {
     const totalReqs = getRecursiveReqCount(node);
     return (
@@ -2952,6 +2956,9 @@ export default function App() {
         <div
           className={`request-tree-item ${dragOverFolder === pathKey ? 'drag-over-folder' : ''}`}
           aria-label={`Folder ${node.name}`}
+          aria-expanded={isExpanded}
+          role="treeitem"
+          tabIndex={0}
           style={{ 
             display: 'flex', 
             justifyContent: 'space-between', 
@@ -2988,11 +2995,17 @@ export default function App() {
               handleMoveRequestToFolder(reqId, node.path);
             }
           }}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault();
+              toggleRequestFolder(pathKey);
+            }
+          }}
         >
           <button
             type="button"
             className="request-tree-left"
-            onClick={() => setExpandedRequestFolders(prev => ({ ...prev, [pathKey]: !isExpanded }))}
+            onClick={() => toggleRequestFolder(pathKey)}
             style={{ display: 'flex', alignItems: 'center', gap: '6px', minWidth: 0, flex: 1, background: 'none', border: 'none', color: 'inherit', padding: 0, textAlign: 'left', cursor: 'pointer' }}
           >
             <span className="icon-btn" style={{ padding: '2px', cursor: 'pointer' }}>
@@ -3043,6 +3056,8 @@ export default function App() {
       </div>
     );
   };
+
+  const isRootDropTarget = dragOverRoot && dragOverFolder === null;
 
   const renderRequestLeafNode = (node: RequestTreeNode, depth: number) => {
     const req = node.requests[0];
@@ -3436,318 +3451,340 @@ export default function App() {
     </header>
   );
 
-  const renderCollectionsView = () => (
-    <>
-      <section className="sidebar" style={{ width: `${sidebarWidth}px` }}>
-        <div className="sidebar-header">
-          <span className="sidebar-title">Collections</span>
-          <div style={{ display: 'flex', gap: '4px' }}>
-            <button className="icon-btn" onClick={handleCreateRequestFolder} title="New Folder">
-              <FolderPlus size={16} />
-            </button>
-            <button className="icon-btn" onClick={handleCreateRequest} title="New Request">
-              <Plus size={16} />
-            </button>
-          </div>
+  const renderCollectionsSidebar = () => (
+    <section className="sidebar" style={{ width: `${sidebarWidth}px` }}>
+      <div className="sidebar-header">
+        <span className="sidebar-title">Collections</span>
+        <div style={{ display: 'flex', gap: '4px' }}>
+          <button className="icon-btn" onClick={handleCreateRequestFolder} title="New Folder">
+            <FolderPlus size={16} />
+          </button>
+          <button className="icon-btn" onClick={handleCreateRequest} title="New Request">
+            <Plus size={16} />
+          </button>
         </div>
+      </div>
 
-        <div className="sidebar-search">
-          <div className="search-input-wrapper">
-            <Search size={14} className="search-icon" />
-            <input 
-              type="text" 
-              placeholder="Filter requests..." 
-              className="sidebar-search-input"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
+      <div className="sidebar-search">
+        <div className="search-input-wrapper">
+          <Search size={14} className="search-icon" />
+          <input
+            type="text"
+            placeholder="Filter requests..."
+            className="sidebar-search-input"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+          />
+        </div>
+      </div>
+
+      <section
+        className="request-tree-container"
+        aria-label="Request collection tree and drop zone"
+        style={{
+          border: isRootDropTarget ? '1px dashed var(--accent-color)' : '1px solid transparent',
+          borderRadius: '4px',
+          margin: '4px',
+          backgroundColor: isRootDropTarget ? 'rgba(79, 70, 229, 0.05)' : undefined,
+          transition: 'all 0.15s ease'
+        }}
+        onDragOver={(e) => {
+          e.preventDefault();
+          e.dataTransfer.dropEffect = 'move';
+        }}
+        onDragEnter={(e) => {
+          e.preventDefault();
+          setDragOverRoot(true);
+        }}
+        onDragLeave={(e) => {
+          const rect = e.currentTarget.getBoundingClientRect();
+          const x = e.clientX;
+          const y = e.clientY;
+          const pointerOutside = x < rect.left || x >= rect.right || y < rect.top || y >= rect.bottom;
+          if (pointerOutside) {
+            setDragOverRoot(false);
+          }
+        }}
+        onDrop={(e) => {
+          e.preventDefault();
+          setDragOverRoot(false);
+          setDragOverFolder(null);
+          const reqId = e.dataTransfer.getData("requestId");
+          if (reqId) {
+            handleMoveRequestToFolder(reqId, "");
+          }
+        }}
+      >
+        {requestTree.length === 0 ? (
+          <div style={{ padding: '24px 16px', textAlign: 'center', color: 'var(--text-muted)', fontSize: '13px' }}>
+            No requests found
+          </div>
+        ) : (
+          renderRequestTree(requestTree)
+        )}
+      </section>
+
+      <div className="sidebar-footer">
+        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+          <Database size={12} />
+          <span>{currentWorkspace?.requests.length || 0} Saved Requests</span>
+        </div>
+      </div>
+    </section>
+  );
+
+  const renderCollectionsRequestTabContent = () => {
+    switch (requestTab) {
+      case 'params':
+        return (
+          <div className="params-table">
+            <div className="table-header">
+              <div style={{ flex: 1.2 }}>Query Param Key</div>
+              <div style={{ flex: 1.8 }}>Value</div>
+              <div style={{ width: '38px', textAlign: 'center' }}>Use</div>
+              <div style={{ width: '32px' }}></div>
+            </div>
+            <div className="table-body">
+              {queryParams.map((param, idx) => (
+                <div key={param.id} className="table-row">
+                  <input type="text" className="kv-input" placeholder="key" value={param.key} onChange={(e) => updateQueryParam(idx, 'key', e.target.value)} />
+                  <input type="text" className="kv-input" placeholder="value" value={param.value} onChange={(e) => updateQueryParam(idx, 'value', e.target.value)} />
+                  <div style={{ width: '38px', display: 'flex', justifyContent: 'center' }}>
+                    <input type="checkbox" checked={param.enabled} onChange={(e) => updateQueryParam(idx, 'enabled', e.target.checked)} style={{ cursor: 'pointer' }} />
+                  </div>
+                  <button className="icon-btn" onClick={() => deleteQueryParam(idx)}><Trash size={14} /></button>
+                </div>
+              ))}
+            </div>
+          </div>
+        );
+      case 'headers':
+        return (
+          <div className="params-table">
+            <div className="table-header">
+              <div style={{ flex: 1.2 }}>HTTP Header Key</div>
+              <div style={{ flex: 1.8 }}>Value</div>
+              <div style={{ width: '38px', textAlign: 'center' }}>Use</div>
+              <div style={{ width: '32px' }}></div>
+            </div>
+            <div className="table-body">
+              {headers.map((h, idx) => (
+                <div key={h.id} className="table-row">
+                  <input type="text" className="kv-input" placeholder="key" value={h.key} onChange={(e) => updateHeader(idx, 'key', e.target.value)} />
+                  <input type="text" className="kv-input" placeholder="value" value={h.value} onChange={(e) => updateHeader(idx, 'value', e.target.value)} />
+                  <div style={{ width: '38px', display: 'flex', justifyContent: 'center' }}>
+                    <input type="checkbox" checked={h.enabled} onChange={(e) => updateHeader(idx, 'enabled', e.target.checked)} style={{ cursor: 'pointer' }} />
+                  </div>
+                  <button className="icon-btn" onClick={() => deleteHeader(idx)}><Trash size={14} /></button>
+                </div>
+              ))}
+            </div>
+          </div>
+        );
+      case 'auth':
+        return (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '16px', padding: '12px' }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+              <label htmlFor="auth-type-select" style={{ fontSize: '13px', fontWeight: '600', color: 'var(--text-secondary)' }}>Authentication Strategy</label>
+              <select id="auth-type-select" className="toolbar-select" value={authType} onChange={(e) => setAuthType(e.target.value)} style={{ width: '240px', cursor: 'pointer' }}>
+                <option value="none">No Auth</option>
+                <option value="bearer">Bearer Token</option>
+                <option value="basic">Basic Auth</option>
+                <option value="digest">Digest Access Auth</option>
+              </select>
+            </div>
+
+            {authType !== 'none' && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', maxWidth: '380px' }}>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                  <label htmlFor="auth-token-input" style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
+                    {authType === 'bearer' ? 'Bearer Access Token' : 'Credentials Username / Password (colon separated)'}
+                  </label>
+                  <input
+                    id="auth-token-input"
+                    type="password"
+                    className="kv-input"
+                    placeholder={authType === 'bearer' ? 'token...' : 'username:password'}
+                    value={authToken}
+                    onChange={(e) => setAuthToken(e.target.value)}
+                  />
+                </div>
+              </div>
+            )}
+          </div>
+        );
+      case 'body':
+        return (
+          <div className="params-table">
+            <div className="table-header">
+              <div style={{ flex: 1.2 }}>Payload Property Key</div>
+              <div style={{ flex: 1.4 }}>Value</div>
+              <div style={{ width: '70px', textAlign: 'center' }}>Type</div>
+              <div style={{ width: '38px', textAlign: 'center' }}>Use</div>
+              <div style={{ width: '32px' }}></div>
+            </div>
+            <div className="table-body">
+              {bodyFields.map((field, idx) => (
+                <div key={field.id} className="table-row">
+                  <input type="text" className="kv-input" placeholder="key" value={field.key} onChange={(e) => updateBodyField(idx, 'key', e.target.value)} />
+                  <input type="text" className="kv-input" placeholder="value" value={field.value} onChange={(e) => updateBodyField(idx, 'value', e.target.value)} />
+                  <select className="toolbar-select" value={field.type} onChange={(e) => updateBodyField(idx, 'type', e.target.value as BodyRow['type'])} style={{ width: '70px', padding: '2px', cursor: 'pointer' }}>
+                    <option value="string">Text</option>
+                    <option value="json">JSON</option>
+                  </select>
+                  <div style={{ width: '38px', display: 'flex', justifyContent: 'center' }}>
+                    <input type="checkbox" checked={field.enabled} onChange={(e) => updateBodyField(idx, 'enabled', e.target.checked)} style={{ cursor: 'pointer' }} />
+                  </div>
+                  <button className="icon-btn" onClick={() => deleteBodyField(idx)}><Trash size={14} /></button>
+                </div>
+              ))}
+            </div>
+          </div>
+        );
+      case 'pre-request':
+        return (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', padding: '12px', height: '100%' }}>
+            <label htmlFor="pre-req-script" style={{ fontSize: '13px', fontWeight: '600', color: 'var(--text-secondary)' }}>Pre-request Event script (JavaScript / Rhai)</label>
+            <textarea
+              id="pre-req-script"
+              className="editor-textarea"
+              placeholder="// Perform actions before request is sent... e.g. set global headers or secrets"
+              value={preRequestScript}
+              onChange={(e) => setPreRequestScript(e.target.value)}
             />
           </div>
+        );
+      case 'tests':
+        return (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', padding: '12px', height: '100%' }}>
+            <label htmlFor="post-req-script" style={{ fontSize: '13px', fontWeight: '600', color: 'var(--text-secondary)' }}>Post-response Assertions sweeps script</label>
+            <textarea
+              id="post-req-script"
+              className="editor-textarea"
+              placeholder="// Write test assertions sweeps... e.g. expectStatus(200); expectResponseTime(500);"
+              value={postResponseScript}
+              onChange={(e) => setPostResponseScript(e.target.value)}
+            />
+          </div>
+        );
+      default:
+        return null;
+    }
+  };
+
+  const renderCollectionsRequestPane = () => {
+    if (!activeRequest) {
+      return (
+        <div className="request-pane-idle">
+          <Globe size={48} className="idle-icon" />
+          <h3 className="idle-title">Select a request to start workbench</h3>
+          <p className="idle-text">Create a new API request or select an existing endpoint from your collections tree.</p>
+          <button className="btn btn-primary" onClick={handleCreateRequest}>Create New Request</button>
         </div>
+      );
+    }
 
-        <section
-          className="request-tree-container"
-          aria-label="Request collection tree and drop zone"
-          style={{
-            border: (dragOverRoot && !dragOverFolder) ? '1px dashed var(--accent-color)' : '1px solid transparent',
-            borderRadius: '4px',
-            margin: '4px',
-            backgroundColor: (dragOverRoot && !dragOverFolder) ? 'rgba(79, 70, 229, 0.05)' : undefined,
-            transition: 'all 0.15s ease'
-          }}
-          onDragOver={(e) => {
-            e.preventDefault();
-            e.dataTransfer.dropEffect = 'move';
-          }}
-          onDragEnter={(e) => {
-            e.preventDefault();
-            setDragOverRoot(true);
-          }}
-          onDragLeave={(e) => {
-            const rect = e.currentTarget.getBoundingClientRect();
-            const x = e.clientX;
-            const y = e.clientY;
-            if (x < rect.left || x >= rect.right || y < rect.top || y >= rect.bottom) {
-              setDragOverRoot(false);
-            }
-          }}
-          onDrop={(e) => {
-            e.preventDefault();
-            setDragOverRoot(false);
-            setDragOverFolder(null);
-            const reqId = e.dataTransfer.getData("requestId");
-            if (reqId) {
-              handleMoveRequestToFolder(reqId, "");
-            }
-          }}
-        >
-          {requestTree.length === 0 ? (
-            <div style={{ padding: '24px 16px', textAlign: 'center', color: 'var(--text-muted)', fontSize: '13px' }}>
-              No requests found
+    return (
+      <>
+        <div className="request-header">
+          <div className="request-title-row">
+            <input
+              type="text"
+              className="request-title-input"
+              value={requestName}
+              onChange={(e) => setRequestName(e.target.value)}
+              onBlur={handleSaveRequest}
+              style={{ flex: 1, minWidth: 0 }}
+            />
+            <div style={{ display: 'flex', gap: '8px', flexShrink: 0, alignItems: 'center' }}>
+              <button
+                className="btn btn-secondary"
+                onClick={() => {
+                  setTestSuiteName("");
+                  setTestCaseName(requestName);
+                  setExpectStatus(response ? String(response.status) : "200");
+                  setExpectMaxTime(response ? String(response.elapsed_ms || 500) : "500");
+                  setExpectContains("");
+                  setSelectedRequestForTestCaseId(activeRequest?.id || "custom");
+                  setTcRequestMethod(requestMethod);
+                  setTcRequestUrl(requestUrl);
+                  setTcRequestItems(buildRequestItems(queryParams, headers, bodyFields, authType, authToken));
+                  setShowAddTestDialog(true);
+                }}
+                style={{ display: 'flex', alignItems: 'center', gap: '4px', whiteSpace: 'nowrap' }}
+                title="Add this request to a regression test suite"
+              >
+                <ShieldCheck size={14} />
+                <span>Generate Test</span>
+              </button>
+              <button className="btn btn-secondary" onClick={handleSaveRequest} style={{ whiteSpace: 'nowrap' }}>Save</button>
             </div>
-          ) : (
-            renderRequestTree(requestTree)
-          )}
-        </section>
+          </div>
 
-        <div className="sidebar-footer">
-          <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-            <Database size={12} />
-            <span>{currentWorkspace?.requests.length || 0} Saved Requests</span>
+          <div className="request-url-row">
+            <select
+              className="method-select"
+              value={requestMethod}
+              onChange={(e) => setRequestMethod(e.target.value)}
+              style={{ cursor: 'pointer' }}
+            >
+              <option value="GET">GET</option>
+              <option value="POST">POST</option>
+              <option value="PUT">PUT</option>
+              <option value="DELETE">DELETE</option>
+              <option value="PATCH">PATCH</option>
+            </select>
+            <input
+              type="text"
+              className="url-input"
+              placeholder="https://api.example.com/endpoint"
+              value={requestUrl}
+              onChange={(e) => handleUrlChange(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') handleSendRequest(); }}
+            />
+            <button className="send-btn" onClick={handleSendRequest} disabled={isLoading}>
+              {isLoading ? (
+                <>
+                  <RefreshCw size={14} className="animate-spin" />
+                  <span>Sending...</span>
+                </>
+              ) : (
+                <>
+                  <Play size={14} fill="white" />
+                  <span>Execute</span>
+                </>
+              )}
+            </button>
+            <button className="send-btn btn-secondary" onClick={handleCopyAsCurl} style={{ width: '42px', padding: 0, justifyContent: 'center', backgroundColor: 'var(--bg-secondary)', border: '1px solid var(--border-color)', color: 'var(--text-secondary)' }} title="Copy Request as cURL command">
+              {copiedCurl ? <Check size={14} style={{ color: 'var(--color-get)' }} /> : <TerminalSquare size={14} />}
+            </button>
+          </div>
+
+          <div className="tabs-row">
+            <button className={`tab-btn ${requestTab === 'params' ? 'active' : ''}`} onClick={() => setRequestTab('params')}>Params</button>
+            <button className={`tab-btn ${requestTab === 'headers' ? 'active' : ''}`} onClick={() => setRequestTab('headers')}>Headers</button>
+            <button className={`tab-btn ${requestTab === 'auth' ? 'active' : ''}`} onClick={() => setRequestTab('auth')}>Auth</button>
+            <button className={`tab-btn ${requestTab === 'body' ? 'active' : ''}`} onClick={() => setRequestTab('body')}>Body</button>
+            <button className={`tab-btn ${requestTab === 'pre-request' ? 'active' : ''}`} onClick={() => setRequestTab('pre-request')}>Pre-request</button>
+            <button className={`tab-btn ${requestTab === 'tests' ? 'active' : ''}`} onClick={() => setRequestTab('tests')}>Tests</button>
           </div>
         </div>
-      </section>
+
+        <div className="tab-content-wrapper">
+          {renderCollectionsRequestTabContent()}
+        </div>
+      </>
+    );
+  };
+
+  const renderCollectionsView = () => (
+    <>
+      {renderCollectionsSidebar()}
 
       <ResizeDivider isDragging={isResizingSidebar} onMouseDown={handleMouseDownSidebar} label="Resize collections sidebar" />
 
       <section className="request-pane">
-        {activeRequest ? (
-          <>
-            <div className="request-header">
-              <div className="request-title-row">
-                <input 
-                  type="text" 
-                  className="request-title-input" 
-                  value={requestName}
-                  onChange={(e) => setRequestName(e.target.value)}
-                  onBlur={handleSaveRequest}
-                  style={{ flex: 1, minWidth: 0 }}
-                />
-                <div style={{ display: 'flex', gap: '8px', flexShrink: 0, alignItems: 'center' }}>
-                  <button 
-                    className="btn btn-secondary" 
-                    onClick={() => {
-                      setTestSuiteName("");
-                      setTestCaseName(requestName);
-                      setExpectStatus(response ? String(response.status) : "200");
-                      setExpectMaxTime(response ? String(response.elapsed_ms || 500) : "500");
-                      setExpectContains("");
-                      setSelectedRequestForTestCaseId(activeRequest?.id || "custom");
-                      setTcRequestMethod(requestMethod);
-                      setTcRequestUrl(requestUrl);
-                      setTcRequestItems(buildRequestItems(queryParams, headers, bodyFields, authType, authToken));
-                      setShowAddTestDialog(true);
-                    }} 
-                    style={{ display: 'flex', alignItems: 'center', gap: '4px', whiteSpace: 'nowrap' }}
-                    title="Add this request to a regression test suite"
-                  >
-                    <ShieldCheck size={14} />
-                    <span>Generate Test</span>
-                  </button>
-                  <button className="btn btn-secondary" onClick={handleSaveRequest} style={{ whiteSpace: 'nowrap' }}>Save</button>
-                </div>
-              </div>
-
-              <div className="request-url-row">
-                <select 
-                  className="method-select" 
-                  value={requestMethod} 
-                  onChange={(e) => setRequestMethod(e.target.value)}
-                  style={{ cursor: 'pointer' }}
-                >
-                  <option value="GET">GET</option>
-                  <option value="POST">POST</option>
-                  <option value="PUT">PUT</option>
-                  <option value="DELETE">DELETE</option>
-                  <option value="PATCH">PATCH</option>
-                </select>
-                <input 
-                  type="text" 
-                  className="url-input" 
-                  placeholder="https://api.example.com/endpoint" 
-                  value={requestUrl}
-                  onChange={(e) => handleUrlChange(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === 'Enter') handleSendRequest(); }}
-                />
-                <button className="send-btn" onClick={handleSendRequest} disabled={isLoading}>
-                  {isLoading ? (
-                    <>
-                      <RefreshCw size={14} className="animate-spin" />
-                      <span>Sending...</span>
-                    </>
-                  ) : (
-                    <>
-                      <Play size={14} fill="white" />
-                      <span>Execute</span>
-                    </>
-                  )}
-                </button>
-                <button className="send-btn btn-secondary" onClick={handleCopyAsCurl} style={{ width: '42px', padding: 0, justifyContent: 'center', backgroundColor: 'var(--bg-secondary)', border: '1px solid var(--border-color)', color: 'var(--text-secondary)' }} title="Copy Request as cURL command">
-                  {copiedCurl ? <Check size={14} style={{ color: 'var(--color-get)' }} /> : <TerminalSquare size={14} />}
-                </button>
-              </div>
-
-              <div className="tabs-row">
-                <button className={`tab-btn ${requestTab === 'params' ? 'active' : ''}`} onClick={() => setRequestTab('params')}>Params</button>
-                <button className={`tab-btn ${requestTab === 'headers' ? 'active' : ''}`} onClick={() => setRequestTab('headers')}>Headers</button>
-                <button className={`tab-btn ${requestTab === 'auth' ? 'active' : ''}`} onClick={() => setRequestTab('auth')}>Auth</button>
-                <button className={`tab-btn ${requestTab === 'body' ? 'active' : ''}`} onClick={() => setRequestTab('body')}>Body</button>
-                <button className={`tab-btn ${requestTab === 'pre-request' ? 'active' : ''}`} onClick={() => setRequestTab('pre-request')}>Pre-request</button>
-                <button className={`tab-btn ${requestTab === 'tests' ? 'active' : ''}`} onClick={() => setRequestTab('tests')}>Tests</button>
-              </div>
-            </div>
-
-            <div className="tab-content-wrapper">
-              {requestTab === 'params' && (
-                <div className="params-table">
-                  <div className="table-header">
-                    <div style={{ flex: 1.2 }}>Query Param Key</div>
-                    <div style={{ flex: 1.8 }}>Value</div>
-                    <div style={{ width: '38px', textAlign: 'center' }}>Use</div>
-                    <div style={{ width: '32px' }}></div>
-                  </div>
-                  <div className="table-body">
-                    {queryParams.map((param, idx) => (
-                      <div key={param.id} className="table-row">
-                        <input type="text" className="kv-input" placeholder="key" value={param.key} onChange={(e) => updateQueryParam(idx, 'key', e.target.value)} />
-                        <input type="text" className="kv-input" placeholder="value" value={param.value} onChange={(e) => updateQueryParam(idx, 'value', e.target.value)} />
-                        <div style={{ width: '38px', display: 'flex', justifyContent: 'center' }}>
-                          <input type="checkbox" checked={param.enabled} onChange={(e) => updateQueryParam(idx, 'enabled', e.target.checked)} style={{ cursor: 'pointer' }} />
-                        </div>
-                        <button className="icon-btn" onClick={() => deleteQueryParam(idx)}><Trash size={14} /></button>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {requestTab === 'headers' && (
-                <div className="params-table">
-                  <div className="table-header">
-                    <div style={{ flex: 1.2 }}>HTTP Header Key</div>
-                    <div style={{ flex: 1.8 }}>Value</div>
-                    <div style={{ width: '38px', textAlign: 'center' }}>Use</div>
-                    <div style={{ width: '32px' }}></div>
-                  </div>
-                  <div className="table-body">
-                    {headers.map((h, idx) => (
-                      <div key={h.id} className="table-row">
-                        <input type="text" className="kv-input" placeholder="key" value={h.key} onChange={(e) => updateHeader(idx, 'key', e.target.value)} />
-                        <input type="text" className="kv-input" placeholder="value" value={h.value} onChange={(e) => updateHeader(idx, 'value', e.target.value)} />
-                        <div style={{ width: '38px', display: 'flex', justifyContent: 'center' }}>
-                          <input type="checkbox" checked={h.enabled} onChange={(e) => updateHeader(idx, 'enabled', e.target.checked)} style={{ cursor: 'pointer' }} />
-                        </div>
-                        <button className="icon-btn" onClick={() => deleteHeader(idx)}><Trash size={14} /></button>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {requestTab === 'auth' && (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '16px', padding: '12px' }}>
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                    <label htmlFor="auth-type-select" style={{ fontSize: '13px', fontWeight: '600', color: 'var(--text-secondary)' }}>Authentication Strategy</label>
-                    <select id="auth-type-select" className="toolbar-select" value={authType} onChange={(e) => setAuthType(e.target.value)} style={{ width: '240px', cursor: 'pointer' }}>
-                      <option value="none">No Auth</option>
-                      <option value="bearer">Bearer Token</option>
-                      <option value="basic">Basic Auth</option>
-                      <option value="digest">Digest Access Auth</option>
-                    </select>
-                  </div>
-
-                  {authType !== 'none' && (
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', maxWidth: '380px' }}>
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                        <label htmlFor="auth-token-input" style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
-                          {authType === 'bearer' ? 'Bearer Access Token' : 'Credentials Username / Password (colon separated)'}
-                        </label>
-                        <input 
-                          id="auth-token-input"
-                          type="password" 
-                          className="kv-input" 
-                          placeholder={authType === 'bearer' ? 'token...' : 'username:password'} 
-                          value={authToken} 
-                          onChange={(e) => setAuthToken(e.target.value)} 
-                        />
-                      </div>
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {requestTab === 'body' && (
-                <div className="params-table">
-                  <div className="table-header">
-                    <div style={{ flex: 1.2 }}>Payload Property Key</div>
-                    <div style={{ flex: 1.4 }}>Value</div>
-                    <div style={{ width: '70px', textAlign: 'center' }}>Type</div>
-                    <div style={{ width: '38px', textAlign: 'center' }}>Use</div>
-                    <div style={{ width: '32px' }}></div>
-                  </div>
-                  <div className="table-body">
-                    {bodyFields.map((field, idx) => (
-                      <div key={field.id} className="table-row">
-                        <input type="text" className="kv-input" placeholder="key" value={field.key} onChange={(e) => updateBodyField(idx, 'key', e.target.value)} />
-                        <input type="text" className="kv-input" placeholder="value" value={field.value} onChange={(e) => updateBodyField(idx, 'value', e.target.value)} />
-                        <select className="toolbar-select" value={field.type} onChange={(e) => updateBodyField(idx, 'type', e.target.value as BodyRow['type'])} style={{ width: '70px', padding: '2px', cursor: 'pointer' }}>
-                          <option value="string">Text</option>
-                          <option value="json">JSON</option>
-                        </select>
-                        <div style={{ width: '38px', display: 'flex', justifyContent: 'center' }}>
-                          <input type="checkbox" checked={field.enabled} onChange={(e) => updateBodyField(idx, 'enabled', e.target.checked)} style={{ cursor: 'pointer' }} />
-                        </div>
-                        <button className="icon-btn" onClick={() => deleteBodyField(idx)}><Trash size={14} /></button>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {requestTab === 'pre-request' && (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', padding: '12px', height: '100%' }}>
-                  <label htmlFor="pre-req-script" style={{ fontSize: '13px', fontWeight: '600', color: 'var(--text-secondary)' }}>Pre-request Event script (JavaScript / Rhai)</label>
-                  <textarea 
-                    id="pre-req-script"
-                    className="editor-textarea" 
-                    placeholder="// Perform actions before request is sent... e.g. set global headers or secrets" 
-                    value={preRequestScript} 
-                    onChange={(e) => setPreRequestScript(e.target.value)}
-                  />
-                </div>
-              )}
-
-              {requestTab === 'tests' && (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', padding: '12px', height: '100%' }}>
-                  <label htmlFor="post-req-script" style={{ fontSize: '13px', fontWeight: '600', color: 'var(--text-secondary)' }}>Post-response Assertions sweeps script</label>
-                  <textarea 
-                    id="post-req-script"
-                    className="editor-textarea" 
-                    placeholder="// Write test assertions sweeps... e.g. expectStatus(200); expectResponseTime(500);" 
-                    value={postResponseScript} 
-                    onChange={(e) => setPostResponseScript(e.target.value)}
-                  />
-                </div>
-              )}
-            </div>
-          </>
-        ) : (
-          <div className="request-pane-idle">
-            <Globe size={48} className="idle-icon" />
-            <h3 className="idle-title">Select a request to start workbench</h3>
-            <p className="idle-text">Create a new API request or select an existing endpoint from your collections tree.</p>
-            <button className="btn btn-primary" onClick={handleCreateRequest}>Create New Request</button>
-          </div>
-        )}
+        {renderCollectionsRequestPane()}
       </section>
 
       <ResizeDivider isDragging={isResizingResponse} onMouseDown={handleMouseDownResponse} label="Resize response panel" />
