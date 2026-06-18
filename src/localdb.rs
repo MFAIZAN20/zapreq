@@ -128,7 +128,10 @@ fn ensure_report_http_columns(conn: &Connection) -> Result<()> {
         ("content_type", "TEXT"),
     ] {
         if !columns.iter().any(|column| column == name) {
-            conn.execute(&format!("ALTER TABLE reports ADD COLUMN {name} {sql_type}"), [])?;
+            conn.execute(
+                &format!("ALTER TABLE reports ADD COLUMN {name} {sql_type}"),
+                [],
+            )?;
         }
     }
 
