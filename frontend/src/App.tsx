@@ -797,17 +797,77 @@ function formatResponseBody(response: ResponseDto) {
   }
 
   if (isHtmlResponse(response)) {
-    const titleRe = /<title[^>]*>([^<]*)<\/title>/i;
-    const headingRe = /<h1[^>]*>([^<]*)<\/h1>/i;
-    const titleMatch = titleRe.exec(response.body);
-    const headingMatch = headingRe.exec(response.body);
-    const title = decodeHtmlEntities((headingMatch?.[1] || titleMatch?.[1] || '').replace(/<[^>]+>/g, '').trim());
+    const extractTag = (tagName: string): string => {
+      const tagLower = `<${tagName}`;
+      const startIdx = response.body.toLowerCase().indexOf(tagLower);
+      if (startIdx === -1) return '';
+      const closeBracket = response.body.indexOf('>', startIdx);
+      if (closeBracket === -1) return '';
+      const endTag = `</${tagName}>`;
+      const endIdx = response.body.toLowerCase().indexOf(endTag, closeBracket);
+      if (endIdx === -1) return '';
+      return response.body.substring(closeBracket + 1, endIdx);
+    };
+
+    const titleText = extractTag('title');
+    const headingText = extractTag('h1');
+    const rawTitle = headingText || titleText || '';
+    
+    let titleCleaned = '';
+    let inTitleTag = false;
+    for (let i = 0; i < rawTitle.length; i++) {
+      const char = rawTitle[i];
+      if (char === '<') {
+        inTitleTag = true;
+      } else if (char === '>') {
+        inTitleTag = false;
+      } else if (!inTitleTag) {
+        titleCleaned += char;
+      }
+    }
+    const title = decodeHtmlEntities(titleCleaned.trim());
+
+    let bodyText = response.body;
+    while (true) {
+      const startIdx = bodyText.toLowerCase().indexOf('<script');
+      if (startIdx === -1) break;
+      const endIdx = bodyText.toLowerCase().indexOf('</script>', startIdx);
+      if (endIdx === -1) {
+        bodyText = bodyText.substring(0, startIdx);
+        break;
+      }
+      bodyText = bodyText.substring(0, startIdx) + bodyText.substring(endIdx + 9);
+    }
+
+    while (true) {
+      const startIdx = bodyText.toLowerCase().indexOf('<style');
+      if (startIdx === -1) break;
+      const endIdx = bodyText.toLowerCase().indexOf('</style>', startIdx);
+      if (endIdx === -1) {
+        bodyText = bodyText.substring(0, startIdx);
+        break;
+      }
+      bodyText = bodyText.substring(0, startIdx) + bodyText.substring(endIdx + 8);
+    }
+
+    bodyText = bodyText.replace(/<\/(?:p|div|h[1-6]|li|tr|br)>/gi, '\n');
+
+    let textCleaned = '';
+    let inBodyTag = false;
+    for (let i = 0; i < bodyText.length; i++) {
+      const char = bodyText[i];
+      if (char === '<') {
+        inBodyTag = true;
+      } else if (char === '>') {
+        inBodyTag = false;
+        textCleaned += ' ';
+      } else if (!inBodyTag) {
+        textCleaned += char;
+      }
+    }
+
     const text = decodeHtmlEntities(
-      response.body
-        .replace(/<script\b[^>]*>(?:[^<]+|<(?!\/script>))*<\/script>/gi, '')
-        .replace(/<style\b[^>]*>(?:[^<]+|<(?!\/style>))*<\/style>/gi, '')
-        .replace(/<\/(p|div|h[1-6]|li|tr|br)>/gi, '\n')
-        .replace(/<[^>]+>/g, ' ')
+      textCleaned
         .replace(/[ \t]+/g, ' ')
         .replace(/\n\s+/g, '\n')
         .replace(/\n{3,}/g, '\n\n')
@@ -892,12 +952,25 @@ function exportExtension(format: string) {
 }
 
 function slugFilename(value: string) {
-  const slug = value
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9_-]+/g, '-')
-    .replace(/^-+/, '')
-    .replace(/-+$/, '');
+  let slug = '';
+  let lastWasHyphen = false;
+  const chars = value.trim().toLowerCase();
+  for (let i = 0; i < chars.length; i++) {
+    const char = chars[i];
+    if ((char >= 'a' && char <= 'z') || (char >= '0' && char <= '9') || char === '_' || char === '-') {
+      slug += char;
+      lastWasHyphen = false;
+    } else if (!lastWasHyphen) {
+      slug += '-';
+      lastWasHyphen = true;
+    }
+  }
+  while (slug.startsWith('-')) {
+    slug = slug.substring(1);
+  }
+  while (slug.endsWith('-')) {
+    slug = slug.substring(0, slug.length - 1);
+  }
   return slug || 'workspace';
 }
 
@@ -1472,6 +1545,63 @@ function TestResultsPane({
   const runTone = runReport ? resultTone(runReport.passed) : null;
   const suiteTone = suiteReport ? suiteResultTone(suiteReport.failed) : null;
 
+  let suiteContentNode: React.ReactNode;
+  if (isRunningSuite && suiteProgress) {
+    suiteContentNode = (
+      <div style={{ padding: '12px 0', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--text-secondary)', fontSize: '13px' }}>
+          <RefreshCw size={14} className="animate-spin" />
+          <span>Running sequential assertions...</span>
+        </div>
+        <div style={{ padding: '12px', backgroundColor: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: '8px' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px', fontSize: '12px' }}>
+            <span style={{ fontWeight: '600', color: 'var(--text-primary)', textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap', maxWidth: '180px' }} title={suiteProgress.caseName}>{suiteProgress.caseName || 'Initializing...'}</span>
+            <span style={{ color: 'var(--text-muted)' }}>{suiteProgress.current} / {suiteProgress.total}</span>
+          </div>
+          <div style={{ width: '100%', height: '6px', backgroundColor: 'rgba(255,255,255,0.08)', borderRadius: '3px', overflow: 'hidden' }}>
+            <div style={{ width: `${progressPercent(suiteProgress.current, suiteProgress.total)}%`, height: '100%', backgroundColor: 'var(--accent-hover)', transition: 'width 0.1s ease' }} />
+          </div>
+        </div>
+      </div>
+    );
+  } else if (suiteReport) {
+    suiteContentNode = (
+      <>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '12px', backgroundColor: suiteTone?.backgroundColor, borderRadius: '8px', border: `1px solid ${suiteTone?.borderColor}` }}>
+          {suiteReport.failed === 0 ? <CheckCircle2 size={18} style={{ color: suiteTone?.iconColor }} /> : <AlertCircle size={18} style={{ color: suiteTone?.iconColor }} />}
+          <span style={{ fontWeight: '600', fontSize: '14px' }}>{suiteTone?.message}</span>
+        </div>
+
+        <div style={{ display: 'flex', gap: '12px', fontSize: '11px', color: 'var(--text-secondary)', marginBottom: '8px' }}>
+          <span>Passed: {suiteReport.passed}</span>
+          <span>|</span>
+          <span>Failed: {suiteReport.failed}</span>
+        </div>
+
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+          <h4 style={{ fontSize: '11px', textTransform: 'uppercase', color: 'var(--text-muted)', fontWeight: '600' }}>Suite Cases</h4>
+          {suiteReport.cases.map((suiteCase) => (
+            <div key={suiteCase.case_name} className={`assertion-item ${suiteCase.passed ? 'passed' : 'failed'}`} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 12px' }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                <span style={{ fontSize: '13px', fontWeight: '500', color: 'var(--text-primary)' }}>{suiteCase.case_name}</span>
+                <span style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>Status: {suiteCase.status} | {suiteCase.elapsed_ms} ms</span>
+              </div>
+              {suiteCase.passed ? <CheckCircle2 size={14} style={{ color: 'var(--color-get)' }} /> : <AlertCircle size={14} style={{ color: 'var(--color-delete)' }} />}
+            </div>
+          ))}
+        </div>
+      </>
+    );
+  } else {
+    suiteContentNode = (
+      <div className="response-idle-state" style={{ height: '300px' }}>
+        <Terminal size={24} className="idle-icon" />
+        <span className="idle-title" style={{ fontSize: '13px' }}>Suite Runner is ready</span>
+        <p className="idle-text" style={{ fontSize: '12px' }}>Click the Execute Suite button above to run all sweeps in this test suite.</p>
+      </div>
+    );
+  }
+
   return (
     <>
       {selectedTestCase && (
@@ -1558,55 +1688,7 @@ function TestResultsPane({
           </div>
 
           <div className="tab-content" style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-            {isRunningSuite && suiteProgress ? (
-              <div style={{ padding: '12px 0', display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--text-secondary)', fontSize: '13px' }}>
-                  <RefreshCw size={14} className="animate-spin" />
-                  <span>Running sequential assertions...</span>
-                </div>
-                <div style={{ padding: '12px', backgroundColor: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: '8px' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px', fontSize: '12px' }}>
-                    <span style={{ fontWeight: '600', color: 'var(--text-primary)', textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap', maxWidth: '180px' }} title={suiteProgress.caseName}>{suiteProgress.caseName || 'Initializing...'}</span>
-                    <span style={{ color: 'var(--text-muted)' }}>{suiteProgress.current} / {suiteProgress.total}</span>
-                  </div>
-                  <div style={{ width: '100%', height: '6px', backgroundColor: 'rgba(255,255,255,0.08)', borderRadius: '3px', overflow: 'hidden' }}>
-                    <div style={{ width: `${progressPercent(suiteProgress.current, suiteProgress.total)}%`, height: '100%', backgroundColor: 'var(--accent-hover)', transition: 'width 0.1s ease' }} />
-                  </div>
-                </div>
-              </div>
-            ) : suiteReport ? (
-              <>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '12px', backgroundColor: suiteTone?.backgroundColor, borderRadius: '8px', border: `1px solid ${suiteTone?.borderColor}` }}>
-                  {suiteReport.failed === 0 ? <CheckCircle2 size={18} style={{ color: suiteTone?.iconColor }} /> : <AlertCircle size={18} style={{ color: suiteTone?.iconColor }} />}
-                  <span style={{ fontWeight: '600', fontSize: '14px' }}>{suiteTone?.message}</span>
-                </div>
-
-                <div style={{ display: 'flex', gap: '12px', fontSize: '11px', color: 'var(--text-secondary)', marginBottom: '8px' }}>
-                  <span>Passed: {suiteReport.passed}</span>
-                  <span>|</span>
-                  <span>Failed: {suiteReport.failed}</span>
-                </div>
-
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                  <h4 style={{ fontSize: '11px', textTransform: 'uppercase', color: 'var(--text-muted)', fontWeight: '600' }}>Suite Cases</h4>
-                  {suiteReport.cases.map((suiteCase) => (
-                    <div key={suiteCase.case_name} className={`assertion-item ${suiteCase.passed ? 'passed' : 'failed'}`} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 12px' }}>
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
-                        <span style={{ fontSize: '13px', fontWeight: '500', color: 'var(--text-primary)' }}>{suiteCase.case_name}</span>
-                        <span style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>Status: {suiteCase.status} | {suiteCase.elapsed_ms} ms</span>
-                      </div>
-                      {suiteCase.passed ? <CheckCircle2 size={14} style={{ color: 'var(--color-get)' }} /> : <AlertCircle size={14} style={{ color: 'var(--color-delete)' }} />}
-                    </div>
-                  ))}
-                </div>
-              </>
-            ) : (
-              <div className="response-idle-state" style={{ height: '300px' }}>
-                <Terminal size={24} className="idle-icon" />
-                <span className="idle-title" style={{ fontSize: '13px' }}>Suite Runner is ready</span>
-                <p className="idle-text" style={{ fontSize: '12px' }}>Click the Execute Suite button above to run all sweeps in this test suite.</p>
-              </div>
-            )}
+            {suiteContentNode}
           </div>
         </>
       )}
@@ -2473,7 +2555,7 @@ export default function App() {
     if (!req) return;
     
     const parts = splitDisplayPath(req.name);
-    const leafName = parts[parts.length - 1] || 'Untitled';
+    const leafName = parts.at(-1) || 'Untitled';
     const newName = targetFolder ? `${targetFolder} / ${leafName}` : leafName;
     
     if (req.name === newName) return;
@@ -3011,6 +3093,135 @@ export default function App() {
     return elements;
   };
 
+  const getRecursiveCases = (n: SuiteTreeNode): StoredTestCase[] => {
+    let result = [...n.cases];
+    for (const child of n.children) {
+      result = result.concat(getRecursiveCases(child));
+    }
+    return result;
+  };
+
+  const renderSuiteFolderItem = (node: SuiteTreeNode, depth: number, isExpanded: boolean, totalCases: number, pathKey: string) => {
+    const isSuiteActive = selectedSuitePath === node.path;
+    return (
+      <div 
+        className={`request-tree-item ${isSuiteActive ? 'active' : ''}`}
+        style={{ 
+          display: 'flex', 
+          justifyContent: 'space-between', 
+          alignItems: 'center', 
+          paddingLeft: `${depth * 12 + 6}px`, 
+          fontWeight: '600',
+          height: '32px'
+        }}
+      >
+        <button
+          type="button"
+          onClick={() => {
+            setSelectedSuitePath(node.path);
+            setSelectedTestCase(null);
+            setSuiteReport(null);
+          }}
+          style={{ display: 'flex', alignItems: 'center', gap: '6px', minWidth: 0, flex: 1, background: 'none', border: 'none', color: 'inherit', padding: 0, textAlign: 'left', cursor: 'pointer' }}
+        >
+          <span className="icon-btn" style={{ padding: '2px', cursor: 'pointer' }}>
+            {isExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+          </span>
+          <Folder size={14} style={{ color: 'var(--accent-hover)' }} />
+          <span className="request-name" style={{ fontSize: '13px', cursor: 'pointer' }} title={node.name}>
+            {node.name}
+          </span>
+          <span style={{ fontSize: '11px', color: 'var(--text-muted)', fontWeight: 'normal' }}>
+            ({totalCases})
+          </span>
+        </button>
+        
+        <div style={{ display: 'flex', gap: '2px' }}>
+          <button 
+            type="button"
+            className="icon-btn"
+            onClick={(e) => {
+              e.stopPropagation();
+              setExpandedFolders(prev => ({ ...prev, [pathKey]: !isExpanded }));
+            }}
+            title={isExpanded ? 'Collapse Folder' : 'Expand Folder'}
+          >
+            {isExpanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+          </button>
+          <button 
+            type="button"
+            className="icon-btn"
+            onClick={(e) => {
+              e.stopPropagation();
+              setSelectedSuitePath(node.path);
+              setSelectedTestCase(null);
+              handleRunTestSuite(node.path);
+            }}
+            title="Run Suite / Folder"
+          >
+            <Play size={12} fill="currentColor" style={{ color: 'var(--color-get)' }} />
+          </button>
+          <button 
+            type="button"
+            className="icon-btn"
+            onClick={(e) => {
+              e.stopPropagation();
+              handleDeleteTestSuite(node.path);
+            }}
+            title="Delete Suite / Folder"
+          >
+            <Trash size={12} style={{ color: 'var(--color-delete)' }} />
+          </button>
+        </div>
+      </div>
+    );
+  };
+
+  const renderSuiteCaseItem = (tc: StoredTestCase, depth: number) => {
+    const isActive = selectedTestCase?.suite === tc.suite && selectedTestCase?.name === tc.name;
+    return (
+      <div
+        key={`${tc.suite}-${tc.name}`}
+        className={`request-tree-item ${isActive ? 'active' : ''}`}
+        style={{
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+          paddingLeft: `${(depth + 1) * 12 + 18}px`,
+          height: '32px',
+        }}
+      >
+        <button
+          type="button"
+          onClick={() => {
+            setSelectedTestCase(tc);
+            setSelectedSuitePath(null);
+            setRunReport(null);
+          }}
+          className="request-tree-left"
+          style={{ minWidth: 0, flex: 1, display: 'flex', alignItems: 'center', gap: '8px', background: 'none', border: 'none', color: 'inherit', padding: 0, textAlign: 'left', cursor: 'pointer' }}
+        >
+          <span className={`method-tag method-${tc.method.toLowerCase()}`} style={{ fontSize: '9px', minWidth: '38px', padding: '1px 3px' }}>
+            {tc.method}
+          </span>
+          <span className="request-name" style={{ fontSize: '12px' }} title={tc.name}>{tc.name}</span>
+        </button>
+        <button 
+          type="button"
+          className="icon-btn delete-btn-hover" 
+          onClick={(e) => {
+            e.stopPropagation();
+            handleDeleteTestCase(tc.suite, tc.name);
+          }}
+          title="Delete Test Case"
+          style={{ padding: '4px' }}
+        >
+          <Trash size={12} style={{ color: 'var(--color-delete)' }} />
+        </button>
+      </div>
+    );
+  };
+
   const renderSuiteTree = (nodes: SuiteTreeNode[], depth: number = 0): ReactNode[] => {
     const elements: ReactNode[] = [];
     
@@ -3019,140 +3230,17 @@ export default function App() {
       const isExpanded = expandedFolders[pathKey] !== false;
       const hasChildren = node.children.length > 0;
       
-      const getRecursiveCases = (n: SuiteTreeNode): StoredTestCase[] => {
-        let result = [...n.cases];
-        for (const child of n.children) {
-          result = result.concat(getRecursiveCases(child));
-        }
-        return result;
-      };
-      
       const recursiveCases = getRecursiveCases(node);
       const totalCases = recursiveCases.length;
 
       if (hasChildren || node.cases.length > 0) {
-        const isSuiteActive = selectedSuitePath === node.path;
-        
         elements.push(
           <div key={pathKey} style={{ display: 'flex', flexDirection: 'column' }}>
-            <div 
-              className={`request-tree-item ${isSuiteActive ? 'active' : ''}`}
-              style={{ 
-                display: 'flex', 
-                justifyContent: 'space-between', 
-                alignItems: 'center', 
-                paddingLeft: `${depth * 12 + 6}px`, 
-                fontWeight: '600',
-                height: '32px'
-              }}
-            >
-              <button
-                type="button"
-                onClick={() => {
-                  setSelectedSuitePath(node.path);
-                  setSelectedTestCase(null);
-                  setSuiteReport(null);
-                }}
-                style={{ display: 'flex', alignItems: 'center', gap: '6px', minWidth: 0, flex: 1, background: 'none', border: 'none', color: 'inherit', padding: 0, textAlign: 'left', cursor: 'pointer' }}
-              >
-                <span className="icon-btn" style={{ padding: '2px', cursor: 'pointer' }}>
-                  {isExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-                </span>
-                <Folder size={14} style={{ color: 'var(--accent-hover)' }} />
-                <span className="request-name" style={{ fontSize: '13px', cursor: 'pointer' }} title={node.name}>
-                  {node.name}
-                </span>
-                <span style={{ fontSize: '11px', color: 'var(--text-muted)', fontWeight: 'normal' }}>
-                  ({totalCases})
-                </span>
-              </button>
-              
-              <div style={{ display: 'flex', gap: '2px' }}>
-                <button 
-                  type="button"
-                  className="icon-btn"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setExpandedFolders(prev => ({ ...prev, [pathKey]: !isExpanded }));
-                  }}
-                  title={isExpanded ? 'Collapse Folder' : 'Expand Folder'}
-                >
-                  {isExpanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-                </button>
-                <button 
-                  type="button"
-                  className="icon-btn"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setSelectedSuitePath(node.path);
-                    setSelectedTestCase(null);
-                    handleRunTestSuite(node.path);
-                  }}
-                  title="Run Suite / Folder"
-                >
-                  <Play size={12} fill="currentColor" style={{ color: 'var(--color-get)' }} />
-                </button>
-                <button 
-                  type="button"
-                  className="icon-btn"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    handleDeleteTestSuite(node.path);
-                  }}
-                  title="Delete Suite / Folder"
-                >
-                  <Trash size={12} style={{ color: 'var(--color-delete)' }} />
-                </button>
-              </div>
-            </div>
-
+            {renderSuiteFolderItem(node, depth, isExpanded, totalCases, pathKey)}
             {isExpanded && (
               <div style={{ display: 'flex', flexDirection: 'column' }}>
                 {renderSuiteTree(node.children, depth + 1)}
-                {node.cases.map((tc) => {
-                  const isActive = selectedTestCase?.suite === tc.suite && selectedTestCase?.name === tc.name;
-                  return (
-                    <div
-                      key={`${tc.suite}-${tc.name}`}
-                      className={`request-tree-item ${isActive ? 'active' : ''}`}
-                      style={{
-                        display: 'flex',
-                        justifyContent: 'space-between',
-                        alignItems: 'center',
-                        paddingLeft: `${(depth + 1) * 12 + 18}px`,
-                        height: '32px',
-                      }}
-                    >
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setSelectedTestCase(tc);
-                          setSelectedSuitePath(null);
-                          setRunReport(null);
-                        }}
-                        className="request-tree-left"
-                        style={{ minWidth: 0, flex: 1, display: 'flex', alignItems: 'center', gap: '8px', background: 'none', border: 'none', color: 'inherit', padding: 0, textAlign: 'left', cursor: 'pointer' }}
-                      >
-                        <span className={`method-tag method-${tc.method.toLowerCase()}`} style={{ fontSize: '9px', minWidth: '38px', padding: '1px 3px' }}>
-                          {tc.method}
-                        </span>
-                        <span className="request-name" style={{ fontSize: '12px' }} title={tc.name}>{tc.name}</span>
-                      </button>
-                      <button 
-                        type="button"
-                        className="icon-btn delete-btn-hover" 
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleDeleteTestCase(tc.suite, tc.name);
-                        }}
-                        title="Delete Test Case"
-                        style={{ padding: '4px' }}
-                      >
-                        <Trash size={12} style={{ color: 'var(--color-delete)' }} />
-                      </button>
-                    </div>
-                  );
-                })}
+                {node.cases.map((tc) => renderSuiteCaseItem(tc, depth))}
               </div>
             )}
           </div>
