@@ -746,9 +746,9 @@ body,
   gap: 8px;
   margin: 12px 12px 0;
   padding: 10px 12px;
-  border: 1px solid rgba(239, 68, 68, 0.35);
-  background: rgba(239, 68, 68, 0.08);
-  color: #fecaca;
+  border: 1px solid #7f1d1d;
+  background: #251616;
+  color: #ff8585;
   border-radius: 6px;
   font-size: 12px;
   line-height: 1.4;
