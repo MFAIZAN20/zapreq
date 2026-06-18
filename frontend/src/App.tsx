@@ -27,8 +27,8 @@ declare global {
 
 let invoke: InvokeFn;
 try {
-  if (window.__TAURI_INTERNALS__) {
-    invoke = window.__TAURI_INTERNALS__.invoke;
+  if ((globalThis as any).__TAURI_INTERNALS__) {
+    invoke = (globalThis as any).__TAURI_INTERNALS__.invoke;
   } else {
     // Import from core if present
     const tauriCore = await import('@tauri-apps/api/core');
@@ -56,7 +56,7 @@ try {
               name: "Get User Info",
               method: "GET",
               url: "https://httpbin.org/get",
-              items: ["Authorization:Bearer secret_token_123", "limit==10"]
+              items: ["Authorization:Bearer <YOUR_TOKEN>", "limit==10"]
             },
             {
               id: "req_2",
@@ -127,7 +127,7 @@ try {
           source_label: "Tauri Interface",
           method: "GET",
           url: "https://httpbin.org/get",
-          items: ["Authorization:Bearer secret_token_123"],
+          items: ["Authorization:Bearer <YOUR_TOKEN>"],
           headers: [],
           expect_status: 200,
           expect_headers: ["Content-Type"],
@@ -227,7 +227,7 @@ try {
         body: JSON.stringify({
           args: { limit: "10" },
           headers: {
-            Authorization: "Bearer secret_token_123",
+            Authorization: "Bearer <YOUR_TOKEN>",
             Host: "httpbin.org"
           },
           origin: "127.0.0.1",
@@ -484,31 +484,31 @@ function parseRequestItems(items: string[]) {
   return { queryParams, headers, bodyFields, authType, authToken };
 }
 
-function buildRequestItems(
-  queryParams: ParamRow[],
-  headers: ParamRow[],
-  bodyFields: BodyRow[],
-  authType: string,
-  authToken: string
-): string[] {
+function buildQueryParamItems(queryParams: ParamRow[]): string[] {
   const items: string[] = [];
-
   for (const q of queryParams) {
     if (q.enabled && q.key.trim() && q.value.trim()) {
       items.push(`${q.key.trim()}==${q.value}`);
     }
   }
+  return items;
+}
 
+function buildHeaderItems(headers: ParamRow[], authType: string, authToken: string): string[] {
+  const items: string[] = [];
   for (const h of headers) {
     if (h.enabled && h.key.trim() && h.value.trim()) {
       items.push(`${h.key.trim()}:${h.value}`);
     }
   }
-
   if (authType === 'bearer' && authToken.trim()) {
     items.push(`Authorization:Bearer ${authToken.trim()}`);
   }
+  return items;
+}
 
+function buildBodyFieldItems(bodyFields: BodyRow[]): string[] {
+  const items: string[] = [];
   for (const b of bodyFields) {
     if (b.enabled && b.key.trim() && b.value.trim()) {
       if (b.type === 'json') {
@@ -518,14 +518,27 @@ function buildRequestItems(
       }
     }
   }
-
   return items;
 }
 
-function parseCurlCommand(input: string) {
+function buildRequestItems(
+  queryParams: ParamRow[],
+  headers: ParamRow[],
+  bodyFields: BodyRow[],
+  authType: string,
+  authToken: string
+): string[] {
+  return [
+    ...buildQueryParamItems(queryParams),
+    ...buildHeaderItems(headers, authType, authToken),
+    ...buildBodyFieldItems(bodyFields)
+  ];
+}
+
+function tokenizeCurlInput(input: string): string[] {
   const cleanInput = input.trim();
   if (!cleanInput.toLowerCase().startsWith('curl')) {
-    return null;
+    return [];
   }
   
   const args: string[] = [];
@@ -565,7 +578,46 @@ function parseCurlCommand(input: string) {
   if (current) {
     args.push(current);
   }
+  return args;
+}
 
+function parseHeaderArg(headerStr: string): { key: string; value: string } | null {
+  if (!headerStr) return null;
+  const parts = headerStr.split(':');
+  const key = parts[0]?.trim() || '';
+  const value = parts.slice(1).join(':').trim() || '';
+  return key ? { key, value } : null;
+}
+
+function parseDataArg(dataStr: string): { bodyFields: { key: string; value: string }[], rawBody: string } {
+  const bodyFields: { key: string; value: string }[] = [];
+  if (!dataStr) {
+    return { bodyFields, rawBody: '' };
+  }
+  const pairs = dataStr.split('&');
+  let isFormData = true;
+  const tempFields: { key: string; value: string }[] = [];
+  for (const pair of pairs) {
+    if (pair.includes('=')) {
+      const [k, v] = pair.split('=');
+      tempFields.push({ key: decodeURIComponent(k || ''), value: decodeURIComponent(v || '') });
+    } else {
+      isFormData = false;
+      break;
+    }
+  }
+  if (isFormData && tempFields.length > 0) {
+    bodyFields.push(...tempFields);
+  }
+  return { bodyFields, rawBody: dataStr };
+}
+
+function parseCurlCommand(input: string) {
+  const args = tokenizeCurlInput(input);
+  if (args.length === 0) {
+    return null;
+  }
+  
   let method = 'GET';
   let url = '';
   const headers: { key: string; value: string }[] = [];
@@ -577,35 +629,14 @@ function parseCurlCommand(input: string) {
     if (arg === '-X' || arg === '--request') {
       method = args[++i] || 'GET';
     } else if (arg === '-H' || arg === '--header') {
-      const headerStr = args[++i];
-      if (headerStr) {
-        const parts = headerStr.split(':');
-        const key = parts[0]?.trim() || '';
-        const value = parts.slice(1).join(':').trim() || '';
-        if (key) {
-          headers.push({ key, value });
-        }
+      const headerObj = parseHeaderArg(args[++i] || '');
+      if (headerObj) {
+        headers.push(headerObj);
       }
     } else if (arg === '-d' || arg === '--data' || arg === '--data-raw' || arg === '--data-binary') {
-      const dataStr = args[++i] || '';
-      if (dataStr) {
-        rawBody = dataStr;
-        const pairs = dataStr.split('&');
-        let isFormData = true;
-        const tempFields: { key: string; value: string }[] = [];
-        for (const pair of pairs) {
-          if (pair.includes('=')) {
-            const [k, v] = pair.split('=');
-            tempFields.push({ key: decodeURIComponent(k || ''), value: decodeURIComponent(v || '') });
-          } else {
-            isFormData = false;
-            break;
-          }
-        }
-        if (isFormData && tempFields.length > 0) {
-          bodyFields.push(...tempFields);
-        }
-      }
+      const dataResult = parseDataArg(args[++i] || '');
+      rawBody = dataResult.rawBody;
+      bodyFields.push(...dataResult.bodyFields);
       if (method === 'GET') {
         method = 'POST';
       }
@@ -649,8 +680,8 @@ function generateCurlCommand(method: string, url: string, headers: ParamRow[], b
           if (val === 'true') obj[key] = true;
           else if (val === 'false') obj[key] = false;
           else if (val === 'null') obj[key] = null;
-          else if (/^\d+$/.test(val)) obj[key] = parseInt(val, 10);
-          else if (/^\d+\.\d+$/.test(val)) obj[key] = parseFloat(val);
+          else if (/^\d+$/.test(val)) obj[key] = Number.parseInt(val, 10);
+          else if (/^\d+\.\d+$/.test(val)) obj[key] = Number.parseFloat(val);
           else obj[key] = f.value;
         }
       }
@@ -1677,7 +1708,7 @@ export default function App() {
     
     if (req.name === newName) return;
     
-    const oldFolder = parts.slice(0, parts.length - 1).join(' / ');
+    const oldFolder = parts.slice(0, -1).join(' / ');
     
     try {
       const saved = await invoke<RequestDto>('save_request', {
@@ -1725,7 +1756,7 @@ export default function App() {
       return;
     }
     const parts = name.split(' / ').map(s => s.trim()).filter(Boolean);
-    const parentFolder = parts.slice(0, parts.length - 1).join(' / ');
+    const parentFolder = parts.slice(0, -1).join(' / ');
     
     try {
       await invoke('delete_request', { workspace: activeWorkspaceName, id: reqId });
@@ -1794,7 +1825,7 @@ export default function App() {
     const items = buildRequestItems(queryParams, headers, bodyFields, authType, authToken);
     
     const oldParts = activeRequest.name.split(' / ').map(s => s.trim()).filter(Boolean);
-    const oldFolder = oldParts.slice(0, oldParts.length - 1).join(' / ');
+    const oldFolder = oldParts.slice(0, -1).join(' / ');
     
     try {
       const saved = await invoke<RequestDto>('save_request', {
@@ -1811,7 +1842,7 @@ export default function App() {
       });
       
       const newParts = requestName.split(' / ').map(s => s.trim()).filter(Boolean);
-      const newFolder = newParts.slice(0, newParts.length - 1).join(' / ');
+      const newFolder = newParts.slice(0, -1).join(' / ');
       if (newFolder) {
         setCustomEmptyFolders(prev => prev.filter(f => f !== newFolder));
       }
@@ -2042,6 +2073,181 @@ export default function App() {
     return byRequest;
   }, [reports]);
 
+  const getRecursiveReqCount = (n: RequestTreeNode): number => {
+    let count = n.isFolder ? 0 : 1;
+    for (const child of n.children) {
+      count += getRecursiveReqCount(child);
+    }
+    return count;
+  };
+
+  const renderRequestFolderNode = (node: RequestTreeNode, depth: number, isExpanded: boolean, pathKey: string) => {
+    const totalReqs = getRecursiveReqCount(node);
+    return (
+      <div key={pathKey} style={{ display: 'flex', flexDirection: 'column' }}>
+        <div 
+          className={`request-tree-item ${dragOverFolder === pathKey ? 'drag-over-folder' : ''}`}
+          role="button"
+          tabIndex={0}
+          style={{ 
+            display: 'flex', 
+            justifyContent: 'space-between', 
+            alignItems: 'center', 
+            paddingLeft: `${depth * 12 + 6}px`, 
+            fontWeight: '600',
+            height: '32px',
+            backgroundColor: dragOverFolder === pathKey ? 'var(--accent-light)' : undefined,
+            border: dragOverFolder === pathKey ? '1px dashed var(--accent-color)' : undefined,
+          }}
+          onClick={() => {
+            setExpandedRequestFolders(prev => ({ ...prev, [pathKey]: !isExpanded }));
+          }}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault();
+              setExpandedRequestFolders(prev => ({ ...prev, [pathKey]: !isExpanded }));
+            }
+          }}
+          onDragOver={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            e.dataTransfer.dropEffect = 'move';
+          }}
+          onDragEnter={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            setDragOverFolder(pathKey);
+          }}
+          onDragLeave={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            if (dragOverFolder === pathKey) {
+              setDragOverFolder(null);
+            }
+          }}
+          onDrop={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            setDragOverFolder(null);
+            const reqId = e.dataTransfer.getData("requestId");
+            if (reqId) {
+              handleMoveRequestToFolder(reqId, node.path);
+            }
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: '6px', minWidth: 0, flex: 1 }}>
+            <button 
+              className="icon-btn" 
+              style={{ padding: '2px', cursor: 'pointer' }}
+              onClick={(e) => {
+                e.stopPropagation();
+                setExpandedRequestFolders(prev => ({ ...prev, [pathKey]: !isExpanded }));
+              }}
+            >
+              {isExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+            </button>
+            <Folder size={14} style={{ color: 'var(--accent-hover)' }} />
+            <span className="request-name" style={{ fontSize: '13px', cursor: 'pointer' }} title={node.name}>
+              {node.name}
+            </span>
+            <span style={{ fontSize: '11px', color: 'var(--text-muted)', fontWeight: 'normal' }}>
+              ({totalReqs})
+            </span>
+          </div>
+          
+          <div style={{ display: 'flex', gap: '4px', marginRight: '6px' }} onClick={e => e.stopPropagation()}>
+            <button 
+              className="icon-btn"
+              onClick={() => handleCreateRequestInFolder(node.path)}
+              title="New Request in Folder"
+              style={{ padding: '4px' }}
+            >
+              <Plus size={12} />
+            </button>
+            <button 
+              className="icon-btn delete-btn-hover"
+              onClick={() => handleDeleteRequestFolder(node.path)}
+              title="Delete Folder"
+              style={{ padding: '4px' }}
+            >
+              <Trash size={12} style={{ color: 'var(--color-delete)' }} />
+            </button>
+          </div>
+        </div>
+
+        {isExpanded && (
+          <div style={{ display: 'flex', flexDirection: 'column' }}>
+            {renderRequestTree(node.children, depth + 1)}
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  const renderRequestLeafNode = (node: RequestTreeNode, depth: number) => {
+    const req = node.requests[0];
+    if (!req) return null;
+    const isActive = activeRequest && activeRequest.id === req.id;
+    const lastRun = latestReportByRequest.get(historyKey(req.method, req.url));
+    return (
+      <div 
+        key={req.id || req.name} 
+        className={`request-tree-item ${isActive ? 'active' : ''}`}
+        role="button"
+        tabIndex={0}
+        onClick={() => loadRequestDetails(req)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            loadRequestDetails(req);
+          }
+        }}
+        draggable={true}
+        onDragStart={(e) => {
+          if (req.id) {
+            e.dataTransfer.setData("requestId", req.id);
+            e.dataTransfer.effectAllowed = 'move';
+          }
+        }}
+        style={{ 
+          display: 'flex', 
+          justifyContent: 'space-between', 
+          alignItems: 'center', 
+          paddingLeft: `${depth * 12 + 18}px`,
+          height: '32px',
+          cursor: 'grab'
+        }}
+      >
+        <div className="request-tree-left" style={{ minWidth: 0, flex: 1 }}>
+          <span className={`method-tag method-${req.method.toLowerCase()}`} style={{ fontSize: '9px', minWidth: '38px', padding: '1px 3px' }}>
+            {req.method}
+          </span>
+          <span className="request-name" style={{ fontSize: '12px' }} title={req.name}>{req.name.split('/').pop()?.trim()}</span>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+          {lastRun && (
+            <div className="request-last-run" style={{ fontSize: '11px' }}>
+              <span className={lastRun.status && lastRun.status < 400 ? 'history-status-ok' : 'history-status-error'}>
+                {lastRun.status || 'ERR'}
+              </span>
+            </div>
+          )}
+          <button 
+            className="icon-btn delete-btn-hover" 
+            onClick={(e) => {
+              e.stopPropagation();
+              if (req.id) handleDeleteRequest(req.id, req.name);
+            }}
+            title="Delete Request"
+            style={{ padding: '4px' }}
+          >
+            <Trash size={12} style={{ color: 'var(--color-delete)' }} />
+          </button>
+        </div>
+      </div>
+    );
+  };
+
   const renderRequestTree = (nodes: RequestTreeNode[], depth: number = 0): ReactNode[] => {
     const elements: ReactNode[] = [];
     
@@ -2049,162 +2255,12 @@ export default function App() {
       const pathKey = node.path;
       const isExpanded = expandedRequestFolders[pathKey] !== false;
       
-      const getRecursiveReqCount = (n: RequestTreeNode): number => {
-        let count = n.isFolder ? 0 : 1;
-        for (const child of n.children) {
-          count += getRecursiveReqCount(child);
-        }
-        return count;
-      };
-      
       if (node.isFolder) {
-        const totalReqs = getRecursiveReqCount(node);
-        
-        elements.push(
-          <div key={pathKey} style={{ display: 'flex', flexDirection: 'column' }}>
-            <div 
-              className={`request-tree-item ${dragOverFolder === pathKey ? 'drag-over-folder' : ''}`}
-              style={{ 
-                display: 'flex', 
-                justifyContent: 'space-between', 
-                alignItems: 'center', 
-                paddingLeft: `${depth * 12 + 6}px`, 
-                fontWeight: '600',
-                height: '32px',
-                backgroundColor: dragOverFolder === pathKey ? 'var(--accent-light)' : undefined,
-                border: dragOverFolder === pathKey ? '1px dashed var(--accent-color)' : undefined,
-              }}
-              onClick={() => {
-                setExpandedRequestFolders(prev => ({ ...prev, [pathKey]: !isExpanded }));
-              }}
-              onDragOver={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                e.dataTransfer.dropEffect = 'move';
-              }}
-              onDragEnter={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                setDragOverFolder(pathKey);
-              }}
-              onDragLeave={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                if (dragOverFolder === pathKey) {
-                  setDragOverFolder(null);
-                }
-              }}
-              onDrop={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                setDragOverFolder(null);
-                const reqId = e.dataTransfer.getData("requestId");
-                if (reqId) {
-                  handleMoveRequestToFolder(reqId, node.path);
-                }
-              }}
-            >
-              <div style={{ display: 'flex', alignItems: 'center', gap: '6px', minWidth: 0, flex: 1 }}>
-                <button 
-                  className="icon-btn" 
-                  style={{ padding: '2px', cursor: 'pointer' }}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setExpandedRequestFolders(prev => ({ ...prev, [pathKey]: !isExpanded }));
-                  }}
-                >
-                  {isExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-                </button>
-                <Folder size={14} style={{ color: 'var(--accent-hover)' }} />
-                <span className="request-name" style={{ fontSize: '13px', cursor: 'pointer' }} title={node.name}>
-                  {node.name}
-                </span>
-                <span style={{ fontSize: '11px', color: 'var(--text-muted)', fontWeight: 'normal' }}>
-                  ({totalReqs})
-                </span>
-              </div>
-              
-              <div style={{ display: 'flex', gap: '4px', marginRight: '6px' }} onClick={e => e.stopPropagation()}>
-                <button 
-                  className="icon-btn"
-                  onClick={() => handleCreateRequestInFolder(node.path)}
-                  title="New Request in Folder"
-                  style={{ padding: '4px' }}
-                >
-                  <Plus size={12} />
-                </button>
-                <button 
-                  className="icon-btn delete-btn-hover"
-                  onClick={() => handleDeleteRequestFolder(node.path)}
-                  title="Delete Folder"
-                  style={{ padding: '4px' }}
-                >
-                  <Trash size={12} style={{ color: 'var(--color-delete)' }} />
-                </button>
-              </div>
-            </div>
-
-            {isExpanded && (
-              <div style={{ display: 'flex', flexDirection: 'column' }}>
-                {renderRequestTree(node.children, depth + 1)}
-              </div>
-            )}
-          </div>
-        );
+        elements.push(renderRequestFolderNode(node, depth, isExpanded, pathKey));
       } else {
-        const req = node.requests[0];
-        if (req) {
-          const isActive = activeRequest && activeRequest.id === req.id;
-          const lastRun = latestReportByRequest.get(historyKey(req.method, req.url));
-          elements.push(
-            <div 
-              key={req.id || req.name} 
-              className={`request-tree-item ${isActive ? 'active' : ''}`}
-              onClick={() => loadRequestDetails(req)}
-              draggable={true}
-              onDragStart={(e) => {
-                if (req.id) {
-                  e.dataTransfer.setData("requestId", req.id);
-                  e.dataTransfer.effectAllowed = 'move';
-                }
-              }}
-              style={{ 
-                display: 'flex', 
-                justifyContent: 'space-between', 
-                alignItems: 'center', 
-                paddingLeft: `${depth * 12 + 18}px`,
-                height: '32px',
-                cursor: 'grab'
-              }}
-            >
-              <div className="request-tree-left" style={{ minWidth: 0, flex: 1 }}>
-                <span className={`method-tag method-${req.method.toLowerCase()}`} style={{ fontSize: '9px', minWidth: '38px', padding: '1px 3px' }}>
-                  {req.method}
-                </span>
-                <span className="request-name" style={{ fontSize: '12px' }} title={req.name}>{req.name.split('/').pop()?.trim()}</span>
-              </div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                {lastRun && (
-                  <div className="request-last-run" style={{ fontSize: '11px' }}>
-                    <span className={lastRun.status && lastRun.status < 400 ? 'history-status-ok' : 'history-status-error'}>
-                      {lastRun.status || 'ERR'}
-                    </span>
-                  </div>
-                )}
-                <button 
-                  className="icon-btn delete-btn-hover" 
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    if (req.id) handleDeleteRequest(req.id, req.name);
-                  }}
-                  title="Delete Request"
-                  style={{ padding: '4px' }}
-                >
-                  <Trash size={12} style={{ color: 'var(--color-delete)' }} />
-                </button>
-              </div>
-            </div>
-          );
+        const el = renderRequestLeafNode(node, depth);
+        if (el) {
+          elements.push(el);
         }
       }
     }
@@ -2344,6 +2400,72 @@ export default function App() {
     }
     
     return elements;
+  };
+
+  const renderReportItem = (rep: ReportDto) => {
+    const isActive = selectedReport && selectedReport.id === rep.id;
+    const meta = reportMeta(rep);
+    const methodLabel = meta.method || rep.module;
+    
+    // Background color mapping
+    let bgCol = 'rgba(16, 185, 129, 0.15)';
+    if (meta.method) {
+      bgCol = `var(--color-${meta.method.toLowerCase()}, rgba(16, 185, 129, 0.15))`;
+    } else if (rep.module.toLowerCase() === 'security') {
+      bgCol = 'rgba(239, 68, 68, 0.15)';
+    } else if (rep.module.toLowerCase() === 'performance') {
+      bgCol = 'rgba(139, 92, 246, 0.15)';
+    } else if (rep.module.toLowerCase() === 'docs') {
+      bgCol = 'rgba(245, 158, 11, 0.15)';
+    }
+
+    // Text color mapping
+    let textCol = 'var(--color-get)';
+    if (meta.method) {
+      textCol = '#fff';
+    } else if (rep.module.toLowerCase() === 'security') {
+      textCol = 'var(--color-delete)';
+    } else if (rep.module.toLowerCase() === 'performance') {
+      textCol = 'var(--color-patch)';
+    } else if (rep.module.toLowerCase() === 'docs') {
+      textCol = 'var(--color-post)';
+    }
+
+    return (
+      <div 
+        key={rep.id} 
+        className={`request-tree-item ${isActive ? 'active' : ''}`}
+        onClick={() => setSelectedReport(rep)}
+        style={{ flexDirection: 'column', alignItems: 'flex-start', gap: '4px', padding: '10px' }}
+      >
+        <div style={{ display: 'flex', width: '100%', justifyContent: 'space-between', alignItems: 'center' }}>
+          <span 
+            className="method-tag" 
+            style={{ 
+              padding: '1px 4px', 
+              fontSize: '8px', 
+              minWidth: 'auto', 
+              backgroundColor: bgCol,
+              color: textCol
+            }}
+          >
+            {methodLabel}
+          </span>
+          <span style={{ fontSize: '9px', color: 'var(--text-muted)' }}>{new Date(rep.created_at).toLocaleTimeString()}</span>
+        </div>
+        <span className="request-name" style={{ fontSize: '12px', fontWeight: '500', color: 'var(--text-primary)' }}>{meta.url || rep.name}</span>
+        <div className="history-meta-row">
+          {typeof meta.status === 'number' && (
+            <span className={meta.status < 400 ? 'history-status-ok' : 'history-status-error'}>
+              {meta.status} {meta.reason || ''}
+            </span>
+          )}
+          {typeof meta.elapsed_ms === 'number' && <span>{formatMs(meta.elapsed_ms)}</span>}
+          {typeof meta.size_bytes === 'number' && <span>{formatBytes(meta.size_bytes)}</span>}
+        </div>
+        <span style={{ fontSize: '11px', color: 'var(--text-muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', width: '100%' }}>{rep.summary}</span>
+      </div>
+    );
   };
 
   return (
@@ -2690,16 +2812,16 @@ export default function App() {
                     {requestTab === 'auth' && (
                       <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
                         <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                          <label style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>Auth Type</label>
-                          <select className="toolbar-select" value={authType} onChange={(e) => setAuthType(e.target.value)} style={{ width: '220px' }}>
+                          <label htmlFor="auth-type-select" style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>Auth Type</label>
+                          <select id="auth-type-select" className="toolbar-select" value={authType} onChange={(e) => setAuthType(e.target.value)} style={{ width: '220px' }}>
                             <option value="none">No Authentication</option>
                             <option value="bearer">Bearer Token</option>
                           </select>
                         </div>
                         {authType === 'bearer' && (
                           <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                            <label style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>Token</label>
-                            <input type="password" className="kv-input" placeholder="secret_token_values" value={authToken} onChange={(e) => setAuthToken(e.target.value)} style={{ width: '360px' }} />
+                            <label htmlFor="auth-token-input" style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>Token</label>
+                            <input id="auth-token-input" type="password" className="kv-input" placeholder="secret_token_values" value={authToken} onChange={(e) => setAuthToken(e.target.value)} style={{ width: '360px' }} />
                           </div>
                         )}
                       </div>
@@ -3302,54 +3424,7 @@ export default function App() {
                     No execution reports stored in local database
                   </div>
                 ) : (
-                  reports.map(rep => {
-                    const isActive = selectedReport && selectedReport.id === rep.id;
-                    const meta = reportMeta(rep);
-                    const methodLabel = meta.method || rep.module;
-                    return (
-                      <div 
-                        key={rep.id} 
-                        className={`request-tree-item ${isActive ? 'active' : ''}`}
-                        onClick={() => setSelectedReport(rep)}
-                        style={{ flexDirection: 'column', alignItems: 'flex-start', gap: '4px', padding: '10px' }}
-                      >
-                        <div style={{ display: 'flex', width: '100%', justifyContent: 'space-between', alignItems: 'center' }}>
-                          <span 
-                            className="method-tag" 
-                            style={{ 
-                              padding: '1px 4px', 
-                              fontSize: '8px', 
-                              minWidth: 'auto', 
-                              backgroundColor: meta.method ? `var(--color-${meta.method.toLowerCase()}, rgba(16, 185, 129, 0.15))` :
-                                             rep.module.toLowerCase() === 'security' ? 'rgba(239, 68, 68, 0.15)' : 
-                                             rep.module.toLowerCase() === 'performance' ? 'rgba(139, 92, 246, 0.15)' : 
-                                             rep.module.toLowerCase() === 'docs' ? 'rgba(245, 158, 11, 0.15)' : 
-                                             'rgba(16, 185, 129, 0.15)',
-                              color: meta.method ? '#fff' :
-                                     rep.module.toLowerCase() === 'security' ? 'var(--color-delete)' : 
-                                     rep.module.toLowerCase() === 'performance' ? 'var(--color-patch)' : 
-                                     rep.module.toLowerCase() === 'docs' ? 'var(--color-post)' : 
-                                     'var(--color-get)'
-                            }}
-                          >
-                            {methodLabel}
-                          </span>
-                          <span style={{ fontSize: '9px', color: 'var(--text-muted)' }}>{new Date(rep.created_at).toLocaleTimeString()}</span>
-                        </div>
-                        <span className="request-name" style={{ fontSize: '12px', fontWeight: '500', color: 'var(--text-primary)' }}>{meta.url || rep.name}</span>
-                        <div className="history-meta-row">
-                          {typeof meta.status === 'number' && (
-                            <span className={meta.status < 400 ? 'history-status-ok' : 'history-status-error'}>
-                              {meta.status} {meta.reason || ''}
-                            </span>
-                          )}
-                          {typeof meta.elapsed_ms === 'number' && <span>{formatMs(meta.elapsed_ms)}</span>}
-                          {typeof meta.size_bytes === 'number' && <span>{formatBytes(meta.size_bytes)}</span>}
-                        </div>
-                        <span style={{ fontSize: '11px', color: 'var(--text-muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', width: '100%' }}>{rep.summary}</span>
-                      </div>
-                    );
-                  })
+                  reports.map(renderReportItem)
                 )}
               </div>
             </section>
@@ -3679,8 +3754,9 @@ export default function App() {
             <h3 className="dialog-title">Create Workspace</h3>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                <label style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>Name</label>
+                <label htmlFor="create-ws-name" style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>Name</label>
                 <input 
+                  id="create-ws-name"
                   type="text" 
                   className="kv-input" 
                   value={newWsName} 
@@ -3689,8 +3765,9 @@ export default function App() {
                 />
               </div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                <label style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>Description</label>
+                <label htmlFor="create-ws-desc" style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>Description</label>
                 <input 
+                  id="create-ws-desc"
                   type="text" 
                   className="kv-input" 
                   value={newWsDesc} 
@@ -3714,8 +3791,9 @@ export default function App() {
             <h3 className="dialog-title">Rename Workspace</h3>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                <label style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>New Name</label>
+                <label htmlFor="rename-ws-name" style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>New Name</label>
                 <input 
+                  id="rename-ws-name"
                   type="text" 
                   className="kv-input" 
                   value={newWsRenameName} 
@@ -3793,8 +3871,9 @@ export default function App() {
                 {/* Add new secret form */}
                 <div style={{ display: 'flex', gap: '8px', alignItems: 'flex-end', backgroundColor: 'var(--bg-primary)', padding: '10px', borderRadius: '6px', border: '1px solid var(--border-color)' }}>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', flex: 1 }}>
-                    <label style={{ fontSize: '11px', color: 'var(--text-muted)' }}>Key Name</label>
+                    <label htmlFor="secret-key-input" style={{ fontSize: '11px', color: 'var(--text-muted)' }}>Key Name</label>
                     <input 
+                      id="secret-key-input"
                       type="text" 
                       placeholder="e.g. AWS_SECRET" 
                       className="kv-input" 
@@ -3804,8 +3883,9 @@ export default function App() {
                     />
                   </div>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', flex: 1.5 }}>
-                    <label style={{ fontSize: '11px', color: 'var(--text-muted)' }}>Secret Value</label>
+                    <label htmlFor="secret-val-input" style={{ fontSize: '11px', color: 'var(--text-muted)' }}>Secret Value</label>
                     <input 
+                      id="secret-val-input"
                       type="password" 
                       placeholder="value" 
                       className="kv-input" 
@@ -3856,8 +3936,9 @@ export default function App() {
             <h3 className="dialog-title">Import Collection / Workspace</h3>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                <label style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>New Workspace Name</label>
+                <label htmlFor="import-ws-name" style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>New Workspace Name</label>
                 <input 
+                  id="import-ws-name"
                   type="text" 
                   className="kv-input" 
                   value={importWsName} 
@@ -3866,8 +3947,9 @@ export default function App() {
                 />
               </div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                <label style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>Import JSON File</label>
+                <label htmlFor="import-file-path" style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>Import JSON File</label>
                 <input 
+                  id="import-file-path"
                   type="text" 
                   className="kv-input" 
                   value={importFilePath} 
@@ -3892,8 +3974,9 @@ export default function App() {
             <h3 className="dialog-title">Export Workspace: {activeWorkspaceName}</h3>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                <label style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>Format</label>
+                <label htmlFor="export-format-select" style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>Format</label>
                 <select 
+                  id="export-format-select"
                   className="toolbar-select" 
                   value={exportFormat} 
                   onChange={(e) => {
@@ -3910,8 +3993,9 @@ export default function App() {
                 </select>
               </div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                <label style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>Destination File or Folder</label>
+                <label htmlFor="export-file-path" style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>Destination File or Folder</label>
                 <input 
+                  id="export-file-path"
                   type="text" 
                   className="kv-input" 
                   value={exportFilePath} 
@@ -3940,8 +4024,9 @@ export default function App() {
             
             <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                <label style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>Suite Name</label>
+                <label htmlFor="test-suite-name" style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>Suite Name</label>
                 <input 
+                  id="test-suite-name"
                   type="text" 
                   className="kv-input" 
                   value={testSuiteName} 
@@ -3951,8 +4036,9 @@ export default function App() {
               </div>
 
               <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                <label style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>Source Request</label>
+                <label htmlFor="test-source-request" style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>Source Request</label>
                 <select
+                  id="test-source-request"
                   className="kv-input"
                   value={selectedRequestForTestCaseId}
                   onChange={(e) => {
@@ -3978,8 +4064,9 @@ export default function App() {
                 <>
                   <div style={{ display: 'flex', gap: '8px', alignItems: 'flex-end' }}>
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', width: '90px' }}>
-                      <label style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>Method</label>
+                      <label htmlFor="tc-method-select" style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>Method</label>
                       <select 
+                        id="tc-method-select"
                         className="kv-input" 
                         value={tcRequestMethod} 
                         onChange={(e) => setTcRequestMethod(e.target.value)}
@@ -3993,8 +4080,9 @@ export default function App() {
                       </select>
                     </div>
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', flex: 1 }}>
-                      <label style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>URL</label>
+                      <label htmlFor="tc-url-input" style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>URL</label>
                       <input 
+                        id="tc-url-input"
                         type="text" 
                         className="kv-input" 
                         value={tcRequestUrl} 
@@ -4007,8 +4095,9 @@ export default function App() {
               )}
               
               <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                <label style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>Test Case Name</label>
+                <label htmlFor="test-case-name" style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>Test Case Name</label>
                 <input 
+                  id="test-case-name"
                   type="text" 
                   className="kv-input" 
                   value={testCaseName} 
