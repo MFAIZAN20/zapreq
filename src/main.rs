@@ -1450,7 +1450,23 @@ fn cli_from_diff_tokens(
 
 #[cfg(test)]
 mod tests {
-    use super::{is_raw_subcommand_invocation, should_launch_default_gui};
+    use super::{
+        append_resume_range_header, collect_resolved_items, final_status_code,
+        infer_ssl_label, is_raw_subcommand_invocation, load_env_file, maybe_render_test_report,
+        parse_cli_from, resolve_request_items, resolve_request_url, should_launch_default_gui,
+        substitute_item_value, validate_unresolved_values,
+    };
+    use std::collections::HashMap;
+    use std::fs;
+    use tempfile::tempdir;
+    use zapreq::config::CliResolved;
+    use zapreq::response::{RequestTrace, ResponseData};
+    use zapreq::testing::TestOptions;
+
+    fn parse_args(argv: &[&str]) -> zapreq::cli::CliArgs {
+        parse_cli_from(argv.iter().map(|arg| (*arg).to_string()).collect::<Vec<_>>())
+            .expect("cli args should parse")
+    }
 
     #[test]
     fn no_args_launches_default_gui() {
@@ -1475,5 +1491,194 @@ mod tests {
             "zapreq".to_string(),
             "tui".to_string()
         ]));
+    }
+
+    #[test]
+    fn load_env_file_parses_quotes_comments_and_whitespace() {
+        let dir = tempdir().expect("tempdir should be created");
+        let path = dir.path().join(".env");
+        fs::write(
+            &path,
+            "HOST=api.example.com\nEMPTY=\nQUOTED=\"hello world\"\nSINGLE='abc'\nTRIM=value # inline comment\n# ignored\n INVALID\n",
+        )
+        .expect("env file should be written");
+
+        let values = load_env_file(path.to_str().expect("path should be utf-8"))
+            .expect("env file should parse");
+
+        assert_eq!(values.get("HOST"), Some(&"api.example.com".to_string()));
+        assert_eq!(values.get("EMPTY"), Some(&"".to_string()));
+        assert_eq!(values.get("QUOTED"), Some(&"hello world".to_string()));
+        assert_eq!(values.get("SINGLE"), Some(&"abc".to_string()));
+        assert_eq!(values.get("TRIM"), Some(&"value".to_string()));
+        assert!(!values.contains_key("INVALID"));
+    }
+
+    #[test]
+    fn resolve_request_parts_apply_env_file_variables() {
+        let dir = tempdir().expect("tempdir should be created");
+        let env_path = dir.path().join(".env");
+        fs::write(
+            &env_path,
+            "HOST=api.example.com\nLIMIT=25\nTOKEN=secret-token\nUPLOAD=docs/spec.json\nCTYPE=application/json\n",
+        )
+        .expect("env file should be written");
+
+        let args = parse_args(&[
+            "zapreq",
+            "GET",
+            "https://{HOST}/users",
+            "limit=={LIMIT}",
+            "Authorization:{TOKEN}",
+            "spec@{UPLOAD};type={CTYPE}",
+            "--env",
+            env_path.to_str().expect("path should be utf-8"),
+        ]);
+
+        let resolved_url = resolve_request_url(&args).expect("url should resolve");
+        let resolved_items = resolve_request_items(&args).expect("items should resolve");
+        append_resume_range_header(&args, &mut Vec::new());
+
+        assert_eq!(resolved_url, "https://api.example.com/users");
+        assert!(resolved_items.contains(&"limit==25".to_string()));
+        assert!(resolved_items.contains(&"Authorization:secret-token".to_string()));
+        assert!(resolved_items.contains(&"spec@docs/spec.json;type=application/json".to_string()));
+    }
+
+    #[test]
+    fn collect_resolved_items_merges_profile_headers() {
+        let mut variables = HashMap::new();
+        variables.insert("TOKEN".to_string(), "abc123".to_string());
+        let mut profile_headers = HashMap::new();
+        profile_headers.insert("Authorization".to_string(), "Bearer {TOKEN}".to_string());
+        let resolved = CliResolved {
+            url: "https://example.com".to_string(),
+            request_items: vec!["q=={TOKEN}".to_string()],
+            profile_headers,
+            variables,
+        };
+
+        let items = collect_resolved_items(&resolved);
+
+        assert_eq!(items[0], "q==abc123");
+        assert!(items.contains(&"Authorization:Bearer abc123".to_string()));
+    }
+
+    #[test]
+    fn validate_unresolved_values_reports_sorted_unique_names() {
+        let err = validate_unresolved_values(
+            "https://{HOST}/v1/{HOST}",
+            &["token:{TOKEN}".to_string(), "query=={ACCOUNT}".to_string()],
+        )
+        .expect_err("unresolved placeholders should be rejected");
+
+        let message = err.to_string();
+        assert!(message.contains("ACCOUNT, HOST, TOKEN"));
+    }
+
+    #[test]
+    fn substitute_item_value_supports_all_item_operator_shapes() {
+        let mut vars = HashMap::new();
+        vars.insert("VALUE".to_string(), "hello".to_string());
+        vars.insert("PATH".to_string(), "fixtures/payload.json".to_string());
+        vars.insert("CTYPE".to_string(), "application/json".to_string());
+
+        assert_eq!(substitute_item_value("name={VALUE}", &vars), "name=hello");
+        assert_eq!(substitute_item_value("name:={VALUE}", &vars), "name:=hello");
+        assert_eq!(substitute_item_value("q=={VALUE}", &vars), "q==hello");
+        assert_eq!(substitute_item_value("Header:{VALUE}", &vars), "Header:hello");
+        assert_eq!(substitute_item_value("data=@{PATH}", &vars), "data=@fixtures/payload.json");
+        assert_eq!(
+            substitute_item_value("payload:=@{PATH}", &vars),
+            "payload:=@fixtures/payload.json"
+        );
+        assert_eq!(
+            substitute_item_value("spec@{PATH};type={CTYPE}", &vars),
+            "spec@fixtures/payload.json;type=application/json"
+        );
+    }
+
+    #[test]
+    fn append_resume_range_header_only_when_partial_file_exists() {
+        let dir = tempdir().expect("tempdir should be created");
+        let download_path = dir.path().join("partial.bin");
+        fs::write(&download_path, b"abcdef").expect("partial file should be written");
+
+        let mut args = parse_args(&["zapreq", "GET", "https://example.com", "--download"]);
+        args.continue_download = true;
+        args.output = Some(download_path.to_string_lossy().into_owned());
+
+        let mut items = Vec::new();
+        append_resume_range_header(&args, &mut items);
+        assert_eq!(items, vec!["Range:bytes=6-".to_string()]);
+
+        let mut zero_args = parse_args(&["zapreq", "GET", "https://example.com", "--download"]);
+        zero_args.continue_download = true;
+        zero_args.output = Some(dir.path().join("missing.bin").to_string_lossy().into_owned());
+        let mut zero_items = Vec::new();
+        append_resume_range_header(&zero_args, &mut zero_items);
+        assert!(zero_items.is_empty());
+    }
+
+    #[test]
+    fn maybe_render_test_report_returns_pass_and_fail_exit_codes() {
+        let trace = RequestTrace {
+            method: "GET".to_string(),
+            url: "https://example.com/users".to_string(),
+            headers: Vec::new(),
+            body_preview: None,
+        };
+        let ok_response = ResponseData {
+            status_code: 200,
+            reason: "OK".to_string(),
+            final_url: trace.url.clone(),
+            headers: Vec::new(),
+            content_type: Some("application/json".to_string()),
+            body: br#"{"ok":true}"#.to_vec(),
+        };
+        let fail_response = ResponseData {
+            status_code: 500,
+            reason: "Server Error".to_string(),
+            final_url: trace.url.clone(),
+            headers: Vec::new(),
+            content_type: Some("application/json".to_string()),
+            body: br#"{"ok":false}"#.to_vec(),
+        };
+        let test_opts = TestOptions {
+            expect_status: Some(200),
+            expect_headers: Vec::new(),
+            expect_json: Vec::new(),
+            expect_body_contains: Vec::new(),
+            max_time_ms: Some(500),
+        };
+
+        let ok_code = maybe_render_test_report(
+            Some((test_opts.clone(), "json".to_string())),
+            &trace,
+            &ok_response,
+            120,
+        )
+        .expect("report rendering should succeed");
+        let fail_code = maybe_render_test_report(
+            Some((test_opts, "text".to_string())),
+            &trace,
+            &fail_response,
+            120,
+        )
+        .expect("report rendering should succeed");
+
+        assert_eq!(ok_code, Some(0));
+        assert_eq!(fail_code, Some(1));
+    }
+
+    #[test]
+    fn final_status_code_and_ssl_label_cover_edge_cases() {
+        let mut args = parse_args(&["zapreq", "GET", "https://example.com"]);
+        args.check_status = true;
+        assert_eq!(final_status_code(&args, 503), 1);
+        assert_eq!(final_status_code(&args, 200), 0);
+        assert_eq!(infer_ssl_label("http://example.com", None), "none");
+        assert_eq!(infer_ssl_label("https://example.com", Some("tls1.3")), "TLS1.3");
+        assert_eq!(infer_ssl_label("https://example.com", None), "TLS(auto)");
     }
 }
