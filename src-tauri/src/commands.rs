@@ -10,7 +10,7 @@ use zapreq::collections::{
     create_workspace as core_create_workspace,
     delete_workspace as core_delete_workspace, list_requests, list_workspaces, load_request,
     load_workspace, load_workspace_request, save_request as save_legacy_request, CollectionEntry,
-    WorkspaceRequest, WorkspaceSummary,
+    Workspace, WorkspaceRequest, WorkspaceSummary,
 };
 use zapreq::config::{
     apply_profile, config_root_dir, load_config, load_profile, merge_defaults, CliResolved,
