@@ -61,8 +61,8 @@ jobs:
 
           package() {
               cd "\$pkgname-\$pkgver"
-              install -Dm755 "target/release/http" \\
-                  "\$pkgdir/usr/bin/http-zapreq"
+              install -Dm755 "target/release/zapreq" \\
+                  "\$pkgdir/usr/bin/zapreq"
               install -Dm644 LICENSE-MIT \\
                   "\$pkgdir/usr/share/licenses/\$pkgname/LICENSE-MIT"
               install -Dm644 LICENSE-APACHE \\

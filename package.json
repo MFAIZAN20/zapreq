@@ -2,8 +2,8 @@
   "name": "zapreq-root",
   "private": true,
   "scripts": {
-    "tauri": "npm --prefix frontend run tauri",
-    "dev": "npm --prefix frontend run tauri dev",
-    "build": "npm --prefix frontend run tauri build"
+    "tauri": "node frontend/node_modules/@tauri-apps/cli/tauri.js",
+    "dev": "node frontend/node_modules/@tauri-apps/cli/tauri.js dev --config src-tauri/tauri.conf.json",
+    "build": "node frontend/node_modules/@tauri-apps/cli/tauri.js build --config src-tauri/tauri.conf.json"
   }
 }

@@ -1,3 +1,12 @@
+## [0.1.5] - 2026-06-19
+
+### Changed
+- Fixed release and AUR packaging to publish the `zapreq` binary instead of the stale `http` path.
+- Aligned the Rust crate, Tauri app, and desktop UI version metadata for the 0.1.5 release.
+
+### Removed
+- Deleted unused frontend starter assets that were no longer referenced by the Tauri UI.
+
 ## [0.1.0] - 2026-05-09
 
 ### Added
