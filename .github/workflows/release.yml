@@ -12,15 +12,19 @@ jobs:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             artifact: zapreq-linux-x86_64
+            binary_path: target/x86_64-unknown-linux-gnu/release/zapreq
           - os: macos-latest
             target: x86_64-apple-darwin
             artifact: zapreq-macos-x86_64
+            binary_path: target/x86_64-apple-darwin/release/zapreq
           - os: macos-latest
             target: aarch64-apple-darwin
             artifact: zapreq-macos-arm64
+            binary_path: target/aarch64-apple-darwin/release/zapreq
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             artifact: zapreq-windows-x86_64.exe
+            binary_path: target/x86_64-pc-windows-msvc/release/zapreq.exe
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -32,7 +36,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
-          path: target/${{ matrix.target }}/release/http*
+          path: ${{ matrix.binary_path }}
 
   publish:
     needs: build
