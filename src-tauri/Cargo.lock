@@ -5755,7 +5755,7 @@ dependencies = [
 
 [[package]]
 name = "zapreq"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "anyhow",
  "atty",
@@ -5789,7 +5789,7 @@ dependencies = [
 
 [[package]]
 name = "zapreq-tauri"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
