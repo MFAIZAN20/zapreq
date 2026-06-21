@@ -201,6 +201,8 @@ pub enum PerfCommand {
         iterations: u32,
         #[arg(long = "duration-secs")]
         duration_secs: Option<u64>,
+        #[arg(long = "concurrency", default_value_t = 1)]
+        concurrency: u32,
     },
 }
 
@@ -722,7 +724,7 @@ fn parse_positional_args(
 
 #[cfg(test)]
 mod tests {
-    use super::{is_known_subcommand_name, parse_cli_from, Command};
+    use super::{is_known_subcommand_name, parse_cli_from, Command, PerfCommand};
 
     #[test]
     fn ui_alias_is_recognized_as_subcommand() {
@@ -741,5 +743,34 @@ mod tests {
     fn tui_subcommand_still_parses() {
         let parsed = parse_cli_from(["zapreq", "tui"]).expect("tui should parse");
         assert!(matches!(parsed.command, Some(Command::Tui)));
+    }
+
+    #[test]
+    fn perf_benchmark_accepts_concurrency_flag() {
+        let parsed = parse_cli_from([
+            "zapreq",
+            "perf",
+            "benchmark",
+            "--alias",
+            "demo",
+            "--concurrency",
+            "4",
+        ])
+        .expect("perf benchmark should parse");
+
+        match parsed.command {
+            Some(Command::Perf {
+                command:
+                    PerfCommand::Benchmark {
+                        concurrency,
+                        source,
+                        ..
+                    },
+            }) => {
+                assert_eq!(concurrency, 4);
+                assert_eq!(source.alias.as_deref(), Some("demo"));
+            }
+            other => panic!("unexpected command shape: {other:?}"),
+        }
     }
 }

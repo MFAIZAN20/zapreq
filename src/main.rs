@@ -1197,8 +1197,9 @@ fn handle_perf_cmd(
             source,
             iterations,
             duration_secs,
+            concurrency,
         } => {
-            let report = benchmark(&source, iterations, duration_secs, config)
+            let report = benchmark(&source, iterations, duration_secs, concurrency, config)
                 .context("performance benchmark failed")?;
             print!("{}", render_perf_report(&report));
         }
