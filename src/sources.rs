@@ -46,7 +46,7 @@ pub fn resolve_records(selector: &SourceSelector) -> Result<Vec<RequestRecord>> 
             entry,
             format!("alias:{alias}"),
             alias.to_string(),
-        )]);
+        )?]);
     }
 
     if let Some(workspace) = selector.workspace.as_deref() {
@@ -61,22 +61,29 @@ pub fn resolve_records(selector: &SourceSelector) -> Result<Vec<RequestRecord>> 
                 entry,
                 format!("request:{workspace}/{request}"),
                 request.to_string(),
-            )]);
+            )?]);
         }
 
         let entries = list_workspace_requests(workspace)
             .with_context(|| format!("failed to list workspace '{}'", workspace))?;
         let out = entries
             .into_iter()
-            .map(|entry| RequestRecord {
-                name: entry.name.clone(),
-                method: entry.method,
-                url: entry.url,
-                items: entry.items,
-                headers: entry.headers,
-                source_label: format!("workspace:{workspace}/{}", entry.name),
+            .map(|entry| {
+                record_from_entry(
+                    CollectionEntry {
+                        alias: entry.name.clone(),
+                        method: entry.method,
+                        url: entry.url,
+                        items: entry.items,
+                        headers: entry.headers,
+                        headers_v2: entry.headers_v2,
+                        created: entry.created,
+                    },
+                    format!("workspace:{workspace}/{}", entry.name),
+                    entry.name,
+                )
             })
-            .collect::<Vec<_>>();
+            .collect::<Result<Vec<_>>>()?;
         return Ok(out);
     }
 
@@ -85,13 +92,13 @@ pub fn resolve_records(selector: &SourceSelector) -> Result<Vec<RequestRecord>> 
     };
     let entries = load_requests_from_import_path(path)
         .with_context(|| format!("failed to resolve requests from import file '{path}'"))?;
-    Ok(entries
+    entries
         .into_iter()
         .map(|entry| {
             let name = entry.alias.clone();
             record_from_entry(entry, format!("file:{path}#{name}"), name)
         })
-        .collect())
+        .collect::<Result<Vec<_>>>()
 }
 
 pub fn resolve_single_record(selector: &SourceSelector) -> Result<RequestRecord> {
@@ -114,11 +121,7 @@ pub fn build_cli_for_record(
         record.method.clone(),
         record.url.clone(),
     ];
-    let mut items = record.items.clone();
-    for (key, value) in &record.headers {
-        items.push(format!("{key}:{value}"));
-    }
-    argv.extend(items);
+    argv.extend(record.items.clone());
     merge_defaults(config, &mut argv);
     let mut cli = crate::cli::parse_cli_from(argv).context("failed to build CLI for request")?;
     cli.command = None;
@@ -133,16 +136,19 @@ pub fn build_spec_for_record(
     let usable_url = normalize_url(&record.url, &cli.default_scheme)
         .with_context(|| format!("failed to normalize URL '{}'", record.url))?;
 
-    let mut resolved_items = record.items.clone();
-    for (key, value) in &record.headers {
-        resolved_items.push(format!("{key}:{value}"));
-    }
+    let resolved_items = record.items.clone();
     let parsed_items =
         parse_request_items(&resolved_items).context("failed to parse saved request items")?;
+    let headers = crate::headers::build_headers_from_cli(
+        &cli,
+        &parsed_items,
+        &std::collections::HashMap::new(),
+    )?;
     let spec = RequestSpec {
         method: cli.method.clone(),
         url: usable_url,
         items: parsed_items,
+        headers,
     };
     Ok((cli, spec))
 }
@@ -175,15 +181,20 @@ pub fn scope_label_for_notes(selector: &SourceSelector) -> Result<String> {
     ))
 }
 
-fn record_from_entry(entry: CollectionEntry, source_label: String, name: String) -> RequestRecord {
-    RequestRecord {
+fn record_from_entry(
+    entry: CollectionEntry,
+    source_label: String,
+    name: String,
+) -> Result<RequestRecord> {
+    let items = crate::collections::materialize_entry_items(&entry)?;
+    Ok(RequestRecord {
         name,
         method: entry.method,
         url: entry.url,
-        items: entry.items,
+        items,
         headers: entry.headers,
         source_label,
-    }
+    })
 }
 
 fn selected_source_count(selector: &SourceSelector) -> usize {

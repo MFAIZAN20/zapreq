@@ -644,11 +644,6 @@ fn execute_request_from_tui(
         .context("failed to build usable URL")?;
     let parsed_items =
         parse_request_items(&resolved_items).context("failed to parse request items")?;
-    let spec = RequestSpec {
-        method: req.method.clone(),
-        url: usable_url.clone(),
-        items: parsed_items,
-    };
 
     let mut synthetic = vec!["zapreq".to_string(), req.method.clone(), usable_url.clone()];
     synthetic.extend(resolved_items);
@@ -656,6 +651,15 @@ fn execute_request_from_tui(
     let mut args: CliArgs =
         parse_cli_from(synthetic).context("failed to parse synthetic CLI args")?;
     args.command = None;
+
+    let headers =
+        crate::headers::build_headers_from_cli(&args, &parsed_items, &resolved.profile_headers)?;
+    let spec = RequestSpec {
+        method: req.method.clone(),
+        url: usable_url.clone(),
+        items: parsed_items,
+        headers,
+    };
 
     let engine = RequestEngine::new();
     let started = Instant::now();

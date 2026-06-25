@@ -4,7 +4,8 @@ import {
   HelpCircle, Database, RefreshCw, 
   SlidersHorizontal, AlertCircle, 
   Terminal, ShieldCheck, Heart, CheckCircle2,
-  Edit, Key, ChevronDown, ChevronRight, Folder, FolderPlus, Check, TerminalSquare
+  Edit, Key, ChevronDown, ChevronRight, Folder, FolderPlus, Check, TerminalSquare,
+  Eye, EyeOff, Save
 } from 'lucide-react';
 
 // Tauri API Bridge import with mock fallback
@@ -73,11 +74,40 @@ try {
     if (cmd === 'get_secrets') {
       return ["MY_API_KEY", "AWS_SECRET_ACCESS_KEY"] as T;
     }
+    if (cmd === 'get_presets') {
+      return ["Global Defaults", "Auth Tokens", "JSON APIs"] as T;
+    }
+    if (cmd === 'get_preset') {
+      const presetName = (args as Record<string, any> | undefined)?.name;
+      if (presetName === 'Global Defaults') {
+        return [
+          { name: "Accept-Encoding", value: "gzip, deflate, br", enabled: true, sensitive: false, source: "Preset" },
+          { name: "User-Agent", value: "zapreq/0.1.5", enabled: true, sensitive: false, source: "Preset" }
+        ] as T;
+      }
+      if (presetName === 'Auth Tokens') {
+        return [
+          { name: "Authorization", value: "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9", enabled: true, sensitive: true, source: "Preset" }
+        ] as T;
+      }
+      return [] as T;
+    }
+    if (cmd === 'get_merged_headers') {
+      const userHeaders = (args as Record<string, any> | undefined)?.user_headers || [];
+      return userHeaders as T;
+    }
+    if (cmd === 'get_header_suggestions') {
+      return [] as T;
+    }
+    if (cmd === 'validate_request_headers') {
+      return [] as T;
+    }
     if (
       cmd === 'set_secret' || cmd === 'delete_secret' || 
       cmd === 'import_workspace' || cmd === 'export_workspace' ||
       cmd === 'save_test_case' || cmd === 'delete_test_case' ||
-      cmd === 'delete_request'
+      cmd === 'delete_request' || cmd === 'create_preset' ||
+      cmd === 'delete_preset'
     ) {
       return null as T;
     }
@@ -117,6 +147,60 @@ try {
           elapsed_ms: 312,
           size_bytes: 512,
           content_type: "application/json"
+        },
+        {
+          id: 103,
+          module: "security",
+          name: "tauri:Get User Info",
+          summary: "2 finding(s) across 1 request(s); active_scan=true",
+          payload_json: JSON.stringify({
+            source: "tauri:Get User Info",
+            generated_at: "2026-06-22T12:30:00Z",
+            live_scan: true,
+            active_scan: true,
+            env_profile: "staging",
+            request_count: 1,
+            checks: [
+              { name: "Live Header Audit", status: "completed", attempts: 1, findings: 1, note: "Observed status 200", target: "tauri:Get User Info" },
+              { name: "SQL Injection Fuzzing", status: "completed", attempts: 4, findings: 1, note: "Compared 4 SQLi mutations against the baseline.", target: "tauri:Get User Info" },
+              { name: "Rate-Limit Burst Test", status: "completed", attempts: 12, findings: 0, note: "throttled=1 server_errors=0 transport_errors=0 avg_ms=188", target: "tauri:Get User Info" }
+            ],
+            findings: [
+              {
+                severity: "high",
+                category: "sqli",
+                title: "Potential SQL injection behavior observed",
+                risk_score: 87,
+                endpoint: "tauri:Get User Info",
+                impact: "A crafted probe changed the server-side behavior in a way that resembles unsafe query handling.",
+                remediation: "Use parameterized queries and suppress raw database errors.",
+                evidence: "query:user payload=\"' OR '1'='1\" baseline=200 mutated=500 baseline_len=188 mutated_len=421 sql_error=syntax error at or near",
+                method: "GET",
+                url: "https://httpbin.org/get?user=1"
+              },
+              {
+                severity: "low",
+                category: "live",
+                title: "No rate-limiting indicators observed",
+                risk_score: 31,
+                endpoint: "tauri:Get User Info",
+                impact: "Missing rate-limit headers can make client-side backoff and abuse monitoring harder.",
+                remediation: "Expose standard rate-limit headers or document the throttling model for this API.",
+                evidence: "x-ratelimit-limit/ratelimit-limit/retry-after not present",
+                method: "GET",
+                url: "https://httpbin.org/get?user=1"
+              }
+            ]
+          }, null, 2),
+          created_at: "2026-06-22T12:30:00Z",
+          method: null,
+          url: "https://httpbin.org/get?user=1",
+          final_url: "https://httpbin.org/get?user=1",
+          status: null,
+          reason: null,
+          elapsed_ms: null,
+          size_bytes: null,
+          content_type: null
         }
       ] as T;
     }
@@ -207,6 +291,12 @@ try {
         }
       ] as T;
     }
+    if (cmd === 'run_security_scan') {
+      await new Promise(r => setTimeout(r, 900));
+      return {
+        report_id: 901
+      } as T;
+    }
     if (cmd === 'send_request') {
       await new Promise(r => setTimeout(r, 600));
       const payload = (args as MockSendArgs | undefined)?.payload ?? {
@@ -245,12 +335,34 @@ try {
   };
 }
 
+interface Header {
+  name: string;
+  value: string;
+  enabled: boolean;
+  sensitive: boolean;
+  source: 'User' | 'Auto' | 'Preset' | 'Environment';
+}
+
+interface HeaderWarning {
+  name?: string | null;
+  message: string;
+  severity: 'Info' | 'Warning' | 'Error';
+}
+
+interface HeaderSuggestion {
+  name: string;
+  description: string;
+  common_values: string[];
+  sensitive_by_default: boolean;
+}
+
 interface RequestDto {
   id: string | null;
   name: string;
   method: string;
   url: string;
   items: string[];
+  headers?: Header[] | null;
   pre_request_script?: string | null;
   post_response_script?: string | null;
 }
@@ -304,12 +416,24 @@ interface ReportDto {
 
 interface SecurityFindingPayload {
   severity?: string;
+  category?: string;
   title?: string;
   risk_score?: number | string;
   endpoint?: string;
   impact?: string;
   remediation?: string;
   evidence?: string;
+  method?: string | null;
+  url?: string | null;
+}
+
+interface SecurityCheckPayload {
+  name?: string;
+  target?: string;
+  status?: string;
+  attempts?: number;
+  findings?: number;
+  note?: string;
 }
 
 interface PerformanceEndpointPayload {
@@ -328,10 +452,12 @@ interface PerformanceEndpointPayload {
 interface ReportPayload {
   source?: string;
   live_scan?: boolean;
+  active_scan?: boolean;
+  env_profile?: string | null;
   generated_at?: string;
+  request_count?: number;
   iterations?: number;
   format?: string;
-  request_count?: number;
   output_path?: string;
   method?: string;
   url?: string;
@@ -343,7 +469,12 @@ interface ReportPayload {
   content_type?: string;
   body?: string;
   findings?: SecurityFindingPayload[];
+  checks?: SecurityCheckPayload[];
   endpoints?: PerformanceEndpointPayload[];
+}
+
+interface SecurityScanResult {
+  report_id: number;
 }
 
 interface StoredTestCase {
@@ -409,6 +540,35 @@ interface ParamRow {
   key: string;
   value: string;
   enabled: boolean;
+  secret?: boolean;
+  source?: 'User' | 'Auto' | 'Preset' | 'Environment';
+}
+
+function mapHeadersToParamRows(headersList: Header[]): ParamRow[] {
+  const rows: ParamRow[] = headersList.map(h => ({
+    id: nextRowId('param'),
+    key: h.name,
+    value: h.value,
+    enabled: h.enabled,
+    secret: h.sensitive,
+    source: h.source
+  }));
+  if (rows.length === 0) {
+    rows.push(createParamRow());
+  }
+  return rows;
+}
+
+function mapParamRowsToHeaders(rows: ParamRow[]): Header[] {
+  return rows
+    .filter(r => r.key.trim() !== '')
+    .map(r => ({
+      name: r.key,
+      value: r.value,
+      enabled: r.enabled,
+      sensitive: r.secret ?? false,
+      source: r.source ?? 'User'
+    }));
 }
 
 interface BodyRow {
@@ -559,6 +719,28 @@ function buildBodyFieldItems(bodyFields: BodyRow[]): string[] {
     }
   }
   return items;
+}
+
+function buildBodyPreview(bodyFields: BodyRow[]): string | null {
+  const activeFields = bodyFields.filter((field) => field.enabled && field.key.trim() && field.value.trim());
+  if (activeFields.length === 0) {
+    return null;
+  }
+
+  const payload: Record<string, unknown> = {};
+  for (const field of activeFields) {
+    if (field.type === 'json') {
+      try {
+        payload[field.key.trim()] = JSON.parse(field.value);
+      } catch {
+        return field.value;
+      }
+    } else {
+      payload[field.key.trim()] = field.value;
+    }
+  }
+
+  return JSON.stringify(payload);
 }
 
 function buildRequestItems(
@@ -1072,14 +1254,46 @@ function renderSecurityReportContent(parsedPayload: ReportPayload, fallbackSourc
 
   return (
     <div className="tab-content" style={{ padding: '20px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '16px' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <span style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>
-          Source: <strong>{parsedPayload.source}</strong> | Live Scan: <strong>{parsedPayload.live_scan ? 'Yes' : 'No'}</strong>
-        </span>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '16px', flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+          <span style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>
+            Source: <strong>{parsedPayload.source}</strong> | Live Scan: <strong>{parsedPayload.live_scan ? 'Yes' : 'No'}</strong> | Active Scan: <strong>{parsedPayload.active_scan ? 'Yes' : 'No'}</strong>
+          </span>
+          <span style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
+            Requests Audited: <strong>{parsedPayload.request_count ?? parsedPayload.findings.length}</strong>
+            {parsedPayload.env_profile ? <> | Environment: <strong>{parsedPayload.env_profile}</strong></> : null}
+          </span>
+        </div>
         <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
           Generated: {parsedPayload.generated_at ? new Date(parsedPayload.generated_at).toLocaleString() : ''}
         </span>
       </div>
+
+      {parsedPayload.checks && parsedPayload.checks.length > 0 && (
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '12px' }}>
+          {parsedPayload.checks.map((check, idx) => {
+            const status = check.status?.toLowerCase() || 'completed';
+            const statusColor = status === 'completed'
+              ? 'var(--color-get)'
+              : status === 'error'
+                ? 'var(--color-delete)'
+                : 'var(--color-post)';
+            return (
+              <div key={`${check.name || 'check'}-${idx}`} style={{ backgroundColor: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: '8px', padding: '14px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', gap: '8px', alignItems: 'center' }}>
+                  <strong style={{ fontSize: '13px', color: 'var(--text-primary)' }}>{check.name}</strong>
+                  <span style={{ fontSize: '10px', textTransform: 'uppercase', fontWeight: '700', color: statusColor }}>{check.status}</span>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px', color: 'var(--text-secondary)' }}>
+                  <span>Attempts: {check.attempts ?? 0}</span>
+                  <span>Findings: {check.findings ?? 0}</span>
+                </div>
+                {check.note && <p style={{ fontSize: '12px', color: 'var(--text-muted)', lineHeight: '1.5' }}>{check.note}</p>}
+              </div>
+            );
+          })}
+        </div>
+      )}
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
         {parsedPayload.findings.length === 0 ? (
@@ -1115,6 +1329,11 @@ function renderSecurityReportContent(parsedPayload: ReportPayload, fallbackSourc
                     >
                       {finding.severity}
                     </span>
+                    {finding.category && (
+                      <span style={{ fontSize: '10px', fontWeight: '700', textTransform: 'uppercase', padding: '2px 6px', borderRadius: '4px', backgroundColor: 'var(--bg-hover)', color: 'var(--text-secondary)' }}>
+                        {finding.category}
+                      </span>
+                    )}
                     <strong style={{ fontSize: '14px', color: 'var(--text-primary)' }}>{finding.title}</strong>
                   </div>
                   <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
@@ -1127,6 +1346,17 @@ function renderSecurityReportContent(parsedPayload: ReportPayload, fallbackSourc
                     <span style={{ color: 'var(--text-muted)', display: 'block', fontSize: '11px', textTransform: 'uppercase', fontWeight: '600' }}>Endpoint / Target</span>
                     <code style={{ color: 'var(--text-secondary)', fontFamily: 'monospace' }}>{finding.endpoint}</code>
                   </div>
+                  {(finding.method || finding.url) && (
+                    <div style={{ display: 'grid', gridTemplateColumns: 'minmax(80px, 120px) 1fr', gap: '8px 12px', alignItems: 'center' }}>
+                      <span style={{ color: 'var(--text-muted)', fontSize: '11px', textTransform: 'uppercase', fontWeight: '600' }}>Request</span>
+                      <div style={{ display: 'flex', gap: '8px', alignItems: 'center', minWidth: 0 }}>
+                        {finding.method && (
+                          <span className="method-tag" style={{ minWidth: '44px', fontSize: '9px' }}>{finding.method}</span>
+                        )}
+                        {finding.url && <code style={{ color: 'var(--text-secondary)', fontFamily: 'monospace', wordBreak: 'break-all' }}>{finding.url}</code>}
+                      </div>
+                    </div>
+                  )}
                   <div>
                     <span style={{ color: 'var(--text-muted)', display: 'block', fontSize: '11px', textTransform: 'uppercase', fontWeight: '600' }}>Impact</span>
                     <p style={{ color: 'var(--text-secondary)' }}>{finding.impact}</p>
@@ -2069,6 +2299,20 @@ export default function App() {
   const [newSecretKey, setNewSecretKey] = useState("");
   const [newSecretVal, setNewSecretVal] = useState("");
 
+  // Header Presets & Live Validation State
+  const [presetsList, setPresetsList] = useState<string[]>([]);
+  const [selectedPreset, setSelectedPreset] = useState("");
+  const [mergedHeaders, setMergedHeaders] = useState<Header[]>([]);
+  const [headerWarnings, setHeaderWarnings] = useState<HeaderWarning[]>([]);
+  const [headerSuggestions, setHeaderSuggestions] = useState<HeaderSuggestion[]>([]);
+  const headerSuggestionMap = useMemo(() => {
+    const entries = headerSuggestions.map((suggestion) => [
+      suggestion.name.toLowerCase(),
+      suggestion,
+    ] as const);
+    return new Map(entries);
+  }, [headerSuggestions]);
+
   // Import / Export State
   const [showImportDialog, setShowImportDialog] = useState(false);
   const [showExportDialog, setShowExportDialog] = useState(false);
@@ -2084,11 +2328,24 @@ export default function App() {
 
   // Test Case Dialog
   const [showAddTestDialog, setShowAddTestDialog] = useState(false);
+  const [showSecurityScanDialog, setShowSecurityScanDialog] = useState(false);
   const [testSuiteName, setTestSuiteName] = useState("");
   const [testCaseName, setTestCaseName] = useState("");
   const [expectStatus, setExpectStatus] = useState("200");
   const [expectMaxTime, setExpectMaxTime] = useState("500");
   const [expectContains, setExpectContains] = useState("");
+  const [securitySeverity, setSecuritySeverity] = useState("low");
+  const [securityLiveScan, setSecurityLiveScan] = useState(true);
+  const [securityActiveScan, setSecurityActiveScan] = useState(true);
+  const [securityIncludeSqli, setSecurityIncludeSqli] = useState(true);
+  const [securityIncludeXss, setSecurityIncludeXss] = useState(true);
+  const [securityIncludeBola, setSecurityIncludeBola] = useState(false);
+  const [securityIncludeRateLimit, setSecurityIncludeRateLimit] = useState(true);
+  const [securityBolaSessionA, setSecurityBolaSessionA] = useState("none");
+  const [securityBolaSessionB, setSecurityBolaSessionB] = useState("none");
+  const [securityRateLimitRequests, setSecurityRateLimitRequests] = useState("12");
+  const [securityRateLimitConcurrency, setSecurityRateLimitConcurrency] = useState("4");
+  const [isRunningSecurityScan, setIsRunningSecurityScan] = useState(false);
   
   // Curl Clipboard Feedback State
   const [copiedCurl, setCopiedCurl] = useState(false);
@@ -2164,6 +2421,18 @@ export default function App() {
       } catch (e) {
         console.warn("Failed to load secrets", e);
       }
+      try {
+        const presets = await invoke<string[]>('get_presets');
+        setPresetsList(presets);
+      } catch (e) {
+        console.warn("Failed to load presets", e);
+      }
+      try {
+        const suggestions = await invoke<HeaderSuggestion[]>('get_header_suggestions');
+        setHeaderSuggestions(suggestions);
+      } catch (e) {
+        console.warn("Failed to load header suggestions", e);
+      }
     } catch (e) {
       console.error("Failed to load initial data", e);
     }
@@ -2172,6 +2441,137 @@ export default function App() {
   useEffect(() => {
     void Promise.resolve().then(() => loadInitialData());
   }, [loadInitialData]);
+
+  // Live Merged Headers & Validation warnings calculation
+  useEffect(() => {
+    let active = true;
+    const fetchMergedAndWarnings = async () => {
+      const trimmedUrl = requestUrl.trim();
+      if (!trimmedUrl) {
+        setMergedHeaders([]);
+        setHeaderWarnings([]);
+        return;
+      }
+      
+      const items = buildRequestItems(queryParams, [], bodyFields, authType, authToken);
+      const userHeadersList = mapParamRowsToHeaders(headers);
+      const envProfile = selectedEnv === 'none' ? null : selectedEnv;
+
+      try {
+        const merged = await invoke<Header[]>('get_merged_headers', {
+          method: requestMethod,
+          url: trimmedUrl,
+          items,
+          user_headers: userHeadersList,
+          env_profile: envProfile
+        });
+        
+        if (!active) return;
+        setMergedHeaders(merged);
+
+        let bodyType = "none";
+        if (bodyFields.length > 0 && bodyFields.some(b => b.enabled && b.key.trim() !== '')) {
+          bodyType = "json";
+        }
+        const bodyContent = bodyType === "json" ? buildBodyPreview(bodyFields) : null;
+        
+        const warnings = await invoke<HeaderWarning[]>('validate_request_headers', {
+          headers: merged,
+          url: trimmedUrl,
+          body_type: bodyType,
+          body_content: bodyContent
+        });
+        
+        if (!active) return;
+        setHeaderWarnings(warnings);
+      } catch (err) {
+        console.warn("Failed to fetch merged headers or warnings", err);
+      }
+    };
+
+    const timer = setTimeout(() => {
+      void fetchMergedAndWarnings();
+    }, 250);
+    
+    return () => {
+      active = false;
+      clearTimeout(timer);
+    };
+  }, [headers, requestMethod, requestUrl, queryParams, bodyFields, authType, authToken, selectedEnv]);
+
+  const [visibleSecrets, setVisibleSecrets] = useState<Record<string, boolean>>({});
+  const toggleSecretVisibility = (id: string) => {
+    setVisibleSecrets(prev => ({ ...prev, [id]: !prev[id] }));
+  };
+
+  const handleApplyPreset = async () => {
+    if (!selectedPreset) return;
+    try {
+      const presetHeaders = await invoke<Header[]>('get_preset', { name: selectedPreset });
+      const newRows = mapHeadersToParamRows(presetHeaders);
+      
+      const merged = [...headers];
+      for (const row of newRows) {
+        if (!row.key.trim()) continue;
+        const existingIdx = merged.findIndex(h => h.key.toLowerCase() === row.key.toLowerCase());
+        if (existingIdx !== -1) {
+          merged[existingIdx] = { ...merged[existingIdx], value: row.value, enabled: row.enabled, secret: row.secret, source: 'Preset' };
+        } else {
+          const emptyIdx = merged.findIndex(h => h.key.trim() === '');
+          if (emptyIdx !== -1) {
+            merged.splice(emptyIdx, 0, row);
+          } else {
+            merged.push(row);
+          }
+        }
+      }
+      
+      if (merged.length === 0 || merged[merged.length - 1].key.trim() !== '') {
+        merged.push(createParamRow());
+      }
+      
+      setHeaders(merged);
+    } catch (e) {
+      alert(`Error loading preset: ${e}`);
+    }
+  };
+
+  const handleSavePreset = async () => {
+    const name = prompt("Enter a name for the new header preset:");
+    if (!name?.trim()) return;
+    const cleanName = name.trim();
+    
+    const userHeadersList = mapParamRowsToHeaders(headers);
+    if (userHeadersList.length === 0) {
+      alert("Please configure at least one header to save as a preset.");
+      return;
+    }
+    
+    try {
+      await invoke('create_preset', { name: cleanName, headers: userHeadersList });
+      const presets = await invoke<string[]>('get_presets');
+      setPresetsList(presets);
+      setSelectedPreset(cleanName);
+      alert(`Preset '${cleanName}' saved successfully!`);
+    } catch (e) {
+      alert(`Error saving preset: ${e}`);
+    }
+  };
+
+  const handleDeletePreset = async () => {
+    if (!selectedPreset) return;
+    if (!confirm(`Are you sure you want to delete the preset '${selectedPreset}'?`)) {
+      return;
+    }
+    try {
+      await invoke('delete_preset', { name: selectedPreset });
+      const presets = await invoke<string[]>('get_presets');
+      setPresetsList(presets);
+      setSelectedPreset("");
+    } catch (e) {
+      alert(`Error deleting preset: ${e}`);
+    }
+  };
 
   // Load request details when active request changes
   const loadRequestDetails = useCallback((req: RequestDto) => {
@@ -2182,7 +2582,11 @@ export default function App() {
 
     const parsed = parseRequestItems(req.items);
     setQueryParams(parsed.queryParams);
-    setHeaders(parsed.headers);
+    if (req.headers && req.headers.length > 0) {
+      setHeaders(mapHeadersToParamRows(req.headers));
+    } else {
+      setHeaders(parsed.headers);
+    }
     setBodyFields(parsed.bodyFields);
     setAuthType(parsed.authType);
     setAuthToken(parsed.authToken);
@@ -2529,7 +2933,8 @@ export default function App() {
           name: defaultName,
           method: "GET",
           url: "https://httpbin.org/get",
-          items: []
+          items: [],
+          headers: []
         }
       });
       
@@ -2565,7 +2970,8 @@ export default function App() {
           name: defaultName,
           method: "GET",
           url: "https://httpbin.org/get",
-          items: []
+          items: [],
+          headers: []
         }
       });
       
@@ -2603,6 +3009,7 @@ export default function App() {
           method: req.method,
           url: req.url,
           items: req.items,
+          headers: req.headers || null,
           pre_request_script: req.pre_request_script || null,
           post_response_script: req.post_response_script || null
         }
@@ -2714,6 +3121,7 @@ export default function App() {
           method: requestMethod,
           url: requestUrl,
           items,
+          headers: mapParamRowsToHeaders(headers),
           pre_request_script: preRequestScript || null,
           post_response_script: postResponseScript || null
         }
@@ -2760,6 +3168,7 @@ export default function App() {
       method: requestMethod,
       url: trimmedUrl,
       items,
+      headers: mapParamRowsToHeaders(headers),
       env_profile: selectedEnv === 'none' ? null : selectedEnv,
       pre_request_script: preRequestScript || null,
       post_response_script: postResponseScript || null
@@ -2810,6 +3219,63 @@ export default function App() {
     }, 2000);
   };
 
+  const openSecurityScanDialog = () => {
+    setSecuritySeverity('low');
+    setSecurityLiveScan(true);
+    setSecurityActiveScan(true);
+    setSecurityIncludeSqli(true);
+    setSecurityIncludeXss(true);
+    setSecurityIncludeBola(false);
+    setSecurityIncludeRateLimit(true);
+    setSecurityBolaSessionA(selectedEnv === 'none' ? 'none' : selectedEnv);
+    setSecurityBolaSessionB('none');
+    setSecurityRateLimitRequests('12');
+    setSecurityRateLimitConcurrency('4');
+    setShowSecurityScanDialog(true);
+  };
+
+  const handleRunSecurityScan = async () => {
+    const trimmedUrl = requestUrl.trim();
+    if (!activeRequest || !trimmedUrl) {
+      return;
+    }
+
+    setIsRunningSecurityScan(true);
+    try {
+      const report = await invoke<SecurityScanResult>('run_security_scan', {
+        payload: {
+          name: requestName,
+          method: requestMethod,
+          url: trimmedUrl,
+          items: buildRequestItems(queryParams, headers, bodyFields, authType, authToken),
+          env_profile: selectedEnv === 'none' ? null : selectedEnv,
+          pre_request_script: preRequestScript || null,
+          severity: securitySeverity,
+          live_scan: securityLiveScan,
+          active_scan: securityActiveScan,
+          include_sqli: securityIncludeSqli,
+          include_xss: securityIncludeXss,
+          include_bola: securityIncludeBola,
+          include_rate_limit: securityIncludeRateLimit,
+          bola_session_a_profile: securityIncludeBola && securityBolaSessionA !== 'none' ? securityBolaSessionA : null,
+          bola_session_b_profile: securityIncludeBola && securityBolaSessionB !== 'none' ? securityBolaSessionB : null,
+          rate_limit_requests: securityIncludeRateLimit ? Number.parseInt(securityRateLimitRequests || '12', 10) : null,
+          rate_limit_concurrency: securityIncludeRateLimit ? Number.parseInt(securityRateLimitConcurrency || '4', 10) : null
+        }
+      });
+      const dbReports = await invoke<ReportDto[]>('get_reports');
+      setReports(dbReports);
+      const selected = dbReports.find((entry) => entry.id === report.report_id) || null;
+      setSelectedReport(selected);
+      setActiveView('reports');
+      setShowSecurityScanDialog(false);
+    } catch (e) {
+      alert(`Failed to run security scan: ${e}`);
+    } finally {
+      setIsRunningSecurityScan(false);
+    }
+  };
+
   // Run Stored Test Case
   const handleRunTestCase = async () => {
     if (!selectedTestCase) return;
@@ -2850,7 +3316,14 @@ export default function App() {
 
   const updateHeader = <K extends keyof ParamRow>(index: number, field: K, value: ParamRow[K]) => {
     const updated = [...headers];
-    updated[index] = { ...updated[index], [field]: value };
+    const nextRow = { ...updated[index], [field]: value };
+    if (field === 'key') {
+      const suggestion = headerSuggestionMap.get(String(value).trim().toLowerCase());
+      if (suggestion && nextRow.secret == null) {
+        nextRow.secret = suggestion.sensitive_by_default;
+      }
+    }
+    updated[index] = nextRow;
     if (index === updated.length - 1 && updated[index].key.trim()) {
       updated.push(createParamRow());
     }
@@ -3539,7 +4012,7 @@ export default function App() {
       case 'params':
         return (
           <div className="params-table">
-            <div className="table-header">
+            <div className="table-header table-header-body">
               <div style={{ flex: 1.2 }}>Query Param Key</div>
               <div style={{ flex: 1.8 }}>Value</div>
               <div style={{ width: '38px', textAlign: 'center' }}>Use</div>
@@ -3561,24 +4034,297 @@ export default function App() {
         );
       case 'headers':
         return (
-          <div className="params-table">
-            <div className="table-header">
-              <div style={{ flex: 1.2 }}>HTTP Header Key</div>
-              <div style={{ flex: 1.8 }}>Value</div>
-              <div style={{ width: '38px', textAlign: 'center' }}>Use</div>
-              <div style={{ width: '32px' }}></div>
+          <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+            {/* Preset Toolbar */}
+            <div className="preset-toolbar" style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '10px 16px', borderBottom: '1px solid var(--border-color)', backgroundColor: 'var(--bg-secondary)', borderRadius: '8px 8px 0 0' }}>
+              <span style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-secondary)' }}>Header Presets:</span>
+              <select 
+                value={selectedPreset} 
+                onChange={(e) => setSelectedPreset(e.target.value)} 
+                className="toolbar-select" 
+                style={{ minWidth: '150px', padding: '4px 8px', borderRadius: '4px', border: '1px solid var(--border-color)', backgroundColor: 'var(--bg-primary)', color: 'var(--text-primary)' }}
+              >
+                <option value="">-- Select Preset --</option>
+                {presetsList.map(p => <option key={p} value={p}>{p}</option>)}
+              </select>
+              <button className="send-btn btn-secondary" onClick={handleApplyPreset} disabled={!selectedPreset} style={{ padding: '4px 10px', fontSize: '12px', height: '28px', border: '1px solid var(--border-color)', color: selectedPreset ? 'var(--text-primary)' : 'var(--text-muted)' }}>
+                Apply
+              </button>
+              <button className="send-btn btn-secondary" onClick={handleSavePreset} style={{ padding: '4px 10px', fontSize: '12px', height: '28px', display: 'flex', alignItems: 'center', gap: '4px', border: '1px solid var(--border-color)' }}>
+                <Save size={12} /> Save As Preset
+              </button>
+              {selectedPreset && (
+                <button className="send-btn btn-secondary" onClick={handleDeletePreset} style={{ padding: '4px 10px', fontSize: '12px', height: '28px', color: '#ef4444', borderColor: 'rgba(239, 68, 68, 0.3)' }}>
+                  Delete
+                </button>
+              )}
             </div>
-            <div className="table-body">
-              {headers.map((h, idx) => (
-                <div key={h.id} className="table-row">
-                  <input type="text" className="kv-input" placeholder="key" value={h.key} onChange={(e) => updateHeader(idx, 'key', e.target.value)} />
-                  <input type="text" className="kv-input" placeholder="value" value={h.value} onChange={(e) => updateHeader(idx, 'value', e.target.value)} />
-                  <div style={{ width: '38px', display: 'flex', justifyContent: 'center' }}>
-                    <input type="checkbox" checked={h.enabled} onChange={(e) => updateHeader(idx, 'enabled', e.target.checked)} style={{ cursor: 'pointer' }} />
-                  </div>
-                  <button className="icon-btn" onClick={() => deleteHeader(idx)}><Trash size={14} /></button>
+
+            <div className="params-table" style={{ flex: 1, padding: '16px' }}>
+              {/* Header List Autocomplete */}
+              <datalist id="common-headers-list">
+                {headerSuggestions.map((suggestion) => (
+                  <option key={suggestion.name} value={suggestion.name} />
+                ))}
+              </datalist>
+
+              <div 
+                className="table-header" 
+                style={{ 
+                  display: 'grid', 
+                  gridTemplateColumns: '38px minmax(0, 1.2fr) minmax(0, 1.8fr) 48px 80px 32px',
+                  gap: '10px',
+                  alignItems: 'center',
+                  padding: '4px 12px 8px'
+                }}
+              >
+                <div style={{ textAlign: 'center' }}>Use</div>
+                <div>HTTP Header Key</div>
+                <div>Value</div>
+                <div style={{ textAlign: 'center' }}>Secret</div>
+                <div style={{ textAlign: 'center' }}>Source</div>
+                <div></div>
+              </div>
+
+              <div className="table-body">
+                {headers.map((h, idx) => {
+                  const rowWarnings = headerWarnings.filter(w => w.name && w.name.toLowerCase() === h.key.toLowerCase());
+                  const valueSuggestions =
+                    headerSuggestionMap.get(h.key.trim().toLowerCase())?.common_values ?? [];
+                  return (
+                    <div key={h.id} style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                      <div 
+                        className="table-row" 
+                        style={{ 
+                          display: 'grid', 
+                          gridTemplateColumns: '38px minmax(0, 1.2fr) minmax(0, 1.8fr) 48px 80px 32px',
+                          gap: '10px',
+                          alignItems: 'center',
+                          padding: '8px 12px'
+                        }}
+                      >
+                        {/* Enabled checkbox */}
+                        <div style={{ display: 'flex', justifyContent: 'center' }}>
+                          <input 
+                            type="checkbox" 
+                            checked={h.enabled} 
+                            onChange={(e) => updateHeader(idx, 'enabled', e.target.checked)} 
+                            style={{ cursor: 'pointer' }} 
+                          />
+                        </div>
+
+                        {/* Key Input with Autocomplete */}
+                        <input 
+                          type="text" 
+                          className="kv-input" 
+                          placeholder="key" 
+                          value={h.key} 
+                          onChange={(e) => updateHeader(idx, 'key', e.target.value)} 
+                          list="common-headers-list"
+                        />
+
+                        {/* Value Input with Autocomplete & Masking Toggle */}
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '4px', position: 'relative' }}>
+                          <input 
+                            type={h.secret && !visibleSecrets[h.id] ? "password" : "text"} 
+                            className="kv-input" 
+                            placeholder="value" 
+                            value={h.value} 
+                            onChange={(e) => updateHeader(idx, 'value', e.target.value)} 
+                            list={valueSuggestions.length > 0 ? `header-values-list-${h.id}` : undefined}
+                            style={{ flex: 1 }}
+                          />
+                          {valueSuggestions.length > 0 && (
+                            <datalist id={`header-values-list-${h.id}`}>
+                              {valueSuggestions.map(v => <option key={v} value={v} />)}
+                            </datalist>
+                          )}
+                        </div>
+
+                        {/* Secret Toggle */}
+                        <div style={{ display: 'flex', justifyContent: 'center' }}>
+                          <button 
+                            type="button" 
+                            className="icon-btn" 
+                            onClick={() => {
+                              const isSecret = !h.secret;
+                              updateHeader(idx, 'secret', isSecret);
+                              if (isSecret) {
+                                setVisibleSecrets(prev => ({ ...prev, [h.id]: false }));
+                              }
+                            }}
+                            title={h.secret ? "Mark as non-sensitive" : "Mark as sensitive/secret"}
+                            style={{ color: h.secret ? '#f59e0b' : 'var(--text-muted)', background: 'none', border: 'none', cursor: 'pointer' }}
+                          >
+                            {h.secret ? (
+                              <span 
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  toggleSecretVisibility(h.id);
+                                }}
+                              >
+                                {visibleSecrets[h.id] ? <EyeOff size={14} /> : <Eye size={14} />}
+                              </span>
+                            ) : (
+                              <Key size={14} />
+                            )}
+                          </button>
+                        </div>
+
+                        {/* Source Label */}
+                        <div style={{ display: 'flex', justifyContent: 'center' }}>
+                          <span 
+                            style={{ 
+                              fontSize: '9px', 
+                              fontWeight: 600, 
+                              padding: '2px 6px', 
+                              borderRadius: '4px',
+                              textTransform: 'uppercase',
+                              backgroundColor: h.source === 'Preset' ? 'rgba(59, 130, 246, 0.15)' :
+                                               h.source === 'Environment' ? 'rgba(16, 185, 129, 0.15)' :
+                                               h.source === 'Auto' ? 'rgba(107, 114, 128, 0.15)' :
+                                                                     'rgba(245, 158, 11, 0.15)',
+                              color: h.source === 'Preset' ? '#60a5fa' :
+                                     h.source === 'Environment' ? '#34d399' :
+                                     h.source === 'Auto' ? '#9ca3af' :
+                                                           '#fbbf24'
+                            }}
+                          >
+                            {h.source || 'User'}
+                          </span>
+                        </div>
+
+                        {/* Trash Icon */}
+                        <button className="icon-btn" onClick={() => deleteHeader(idx)}><Trash size={14} /></button>
+                      </div>
+
+                      {/* Warnings list for the current header row */}
+                      {rowWarnings.map((w, wIdx) => (
+                        <div 
+                          key={wIdx} 
+                          style={{ 
+                            fontSize: '11px', 
+                            color: w.severity === 'Error' ? '#ef4444' : '#f59e0b', 
+                            paddingLeft: '48px', 
+                            display: 'flex', 
+                            alignItems: 'center', 
+                            gap: '4px',
+                            marginBottom: '4px'
+                          }}
+                        >
+                          <AlertCircle size={12} />
+                          <span>{w.message}</span>
+                        </div>
+                      ))}
+                    </div>
+                  );
+                })}
+              </div>
+
+              {/* Resolved Headers Preview Panel */}
+              <div 
+                className="merged-headers-preview" 
+                style={{ 
+                  marginTop: '24px', 
+                  padding: '16px', 
+                  border: '1px solid var(--border-color)', 
+                  borderRadius: '8px', 
+                  backgroundColor: 'var(--bg-secondary)'
+                }}
+              >
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+                  <h3 style={{ margin: 0, fontSize: '13px', fontWeight: 600, color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    <Terminal size={14} /> Resolved Headers Preview
+                  </h3>
+                  <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>Auto-computed from presets, env, and body type</span>
                 </div>
-              ))}
+
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                  {mergedHeaders.map((mh, idx) => {
+                    const isSensitive = ["authorization", "proxy-authorization", "x-api-key", "api-key", "cookie", "set-cookie", "x-auth-token", "x-csrf-token"].includes(mh.name.toLowerCase());
+                    let maskedValue = mh.value;
+                    if (isSensitive && mh.value) {
+                      const parts = mh.value.split(' ');
+                      if (parts.length > 1) {
+                        const scheme = parts[0];
+                        const rest = parts.slice(1).join(' ');
+                        maskedValue = `${scheme} ${rest.length <= 5 ? "****" : rest.slice(0, 5) + "...****"}`;
+                      } else {
+                        maskedValue = mh.value.length <= 5 ? "****" : mh.value.slice(0, 5) + "...****";
+                      }
+                    }
+
+                    return (
+                      <div 
+                        key={idx} 
+                        style={{ 
+                          display: 'flex', 
+                          justifyContent: 'space-between', 
+                          alignItems: 'center', 
+                          padding: '6px 8px', 
+                          backgroundColor: 'var(--bg-primary)', 
+                          borderRadius: '4px',
+                          fontSize: '12px'
+                        }}
+                      >
+                        <div style={{ display: 'flex', alignItems: 'center', gap:8, flex: 1, minWidth: 0 }}>
+                          <span style={{ fontWeight: 600, color: 'var(--text-secondary)', flexShrink: 0 }}>{mh.name}:</span>
+                          <span style={{ color: 'var(--text-muted)', fontFamily: 'monospace', textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap' }} title={mh.value}>
+                            {maskedValue}
+                          </span>
+                        </div>
+                        <span 
+                          style={{ 
+                            fontSize: '9px', 
+                            fontWeight: 600, 
+                            padding: '1px 4px', 
+                            borderRadius: '3px',
+                            textTransform: 'uppercase',
+                            marginLeft: '8px',
+                            backgroundColor: mh.source === 'Preset' ? 'rgba(59, 130, 246, 0.15)' :
+                                             mh.source === 'Environment' ? 'rgba(16, 185, 129, 0.15)' :
+                                             mh.source === 'Auto' ? 'rgba(107, 114, 128, 0.15)' :
+                                                                   'rgba(245, 158, 11, 0.15)',
+                            color: mh.source === 'Preset' ? '#60a5fa' :
+                                   mh.source === 'Environment' ? '#34d399' :
+                                   mh.source === 'Auto' ? '#9ca3af' :
+                                                         '#fbbf24'
+                          }}
+                        >
+                          {mh.source}
+                        </span>
+                      </div>
+                    );
+                  })}
+
+                  {mergedHeaders.length === 0 && (
+                    <div style={{ fontSize: '12px', color: 'var(--text-muted)', textAlign: 'center', padding: '12px' }}>
+                      No resolved headers. Enter URL or configure parameters.
+                    </div>
+                  )}
+                </div>
+
+                {/* General/Global Warnings (not tied to specific header row keys) */}
+                {headerWarnings.filter(w => !w.name).map((w, wIdx) => (
+                  <div 
+                    key={wIdx} 
+                    style={{ 
+                      marginTop: '12px',
+                      padding: '8px 12px',
+                      borderRadius: '6px',
+                      fontSize: '12px',
+                      backgroundColor: w.severity === 'Error' ? 'rgba(239, 68, 68, 0.1)' : 'rgba(245, 158, 11, 0.1)',
+                      color: w.severity === 'Error' ? '#f87171' : '#fbbf24',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '6px'
+                    }}
+                  >
+                    <AlertCircle size={14} />
+                    <span>{w.message}</span>
+                  </div>
+                ))}
+              </div>
             </div>
           </div>
         );
@@ -3626,7 +4372,7 @@ export default function App() {
             </div>
             <div className="table-body">
               {bodyFields.map((field, idx) => (
-                <div key={field.id} className="table-row">
+                <div key={field.id} className="table-row table-row-body">
                   <input type="text" className="kv-input" placeholder="key" value={field.key} onChange={(e) => updateBodyField(idx, 'key', e.target.value)} />
                   <input type="text" className="kv-input" placeholder="value" value={field.value} onChange={(e) => updateBodyField(idx, 'value', e.target.value)} />
                   <select className="toolbar-select" value={field.type} onChange={(e) => updateBodyField(idx, 'type', e.target.value as BodyRow['type'])} style={{ width: '70px', padding: '2px', cursor: 'pointer' }}>
@@ -3698,6 +4444,15 @@ export default function App() {
               style={{ flex: 1, minWidth: 0 }}
             />
             <div style={{ display: 'flex', gap: '8px', flexShrink: 0, alignItems: 'center' }}>
+              <button
+                className="btn btn-secondary"
+                onClick={openSecurityScanDialog}
+                style={{ display: 'flex', alignItems: 'center', gap: '4px', whiteSpace: 'nowrap' }}
+                title="Run static, live, and active security checks against this request"
+              >
+                <ShieldCheck size={14} />
+                <span>Security Scan</span>
+              </button>
               <button
                 className="btn btn-secondary"
                 onClick={() => {
@@ -4348,6 +5103,110 @@ export default function App() {
             <div className="dialog-buttons">
               <button className="btn btn-secondary" onClick={() => setShowExportDialog(false)}>Cancel</button>
               <button className="btn btn-primary" onClick={handleExportWorkspace}>Export</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showSecurityScanDialog && (
+        <div className="dialog-overlay">
+          <div className="dialog-content" style={{ width: '520px' }}>
+            <h3 className="dialog-title" style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <ShieldCheck size={18} style={{ color: 'var(--color-delete)' }} />
+              <span>Advanced Security Scan</span>
+            </h3>
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                  <label htmlFor="security-severity" style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>Minimum Severity</label>
+                  <select id="security-severity" className="toolbar-select" value={securitySeverity} onChange={(e) => setSecuritySeverity(e.target.value)}>
+                    <option value="low">Low</option>
+                    <option value="medium">Medium</option>
+                    <option value="high">High</option>
+                    <option value="critical">Critical</option>
+                  </select>
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                  <label htmlFor="security-target-env" style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>Base Environment</label>
+                  <input
+                    id="security-target-env"
+                    type="text"
+                    className="kv-input"
+                    value={selectedEnv === 'none' ? 'No environment selected' : selectedEnv}
+                    readOnly
+                  />
+                </div>
+              </div>
+
+              <div style={{ borderTop: '1px solid var(--border-color)', paddingTop: '12px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px', fontSize: '13px', color: 'var(--text-secondary)' }}>
+                  <span>Live header and response audit</span>
+                  <input type="checkbox" checked={securityLiveScan} onChange={(e) => setSecurityLiveScan(e.target.checked)} />
+                </label>
+                <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px', fontSize: '13px', color: 'var(--text-secondary)' }}>
+                  <span>Active mutation probes</span>
+                  <input type="checkbox" checked={securityActiveScan} onChange={(e) => setSecurityActiveScan(e.target.checked)} />
+                </label>
+              </div>
+
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+                <label style={{ backgroundColor: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: '8px', padding: '12px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '10px', opacity: securityActiveScan ? 1 : 0.55 }}>
+                  <span style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>SQL injection fuzzing</span>
+                  <input type="checkbox" checked={securityIncludeSqli} disabled={!securityActiveScan} onChange={(e) => setSecurityIncludeSqli(e.target.checked)} />
+                </label>
+                <label style={{ backgroundColor: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: '8px', padding: '12px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '10px', opacity: securityActiveScan ? 1 : 0.55 }}>
+                  <span style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>XSS reflection fuzzing</span>
+                  <input type="checkbox" checked={securityIncludeXss} disabled={!securityActiveScan} onChange={(e) => setSecurityIncludeXss(e.target.checked)} />
+                </label>
+                <label style={{ backgroundColor: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: '8px', padding: '12px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '10px', opacity: securityActiveScan ? 1 : 0.55 }}>
+                  <span style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>BOLA session comparison</span>
+                  <input type="checkbox" checked={securityIncludeBola} disabled={!securityActiveScan} onChange={(e) => setSecurityIncludeBola(e.target.checked)} />
+                </label>
+                <label style={{ backgroundColor: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: '8px', padding: '12px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '10px', opacity: securityActiveScan ? 1 : 0.55 }}>
+                  <span style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>Rate-limit burst test</span>
+                  <input type="checkbox" checked={securityIncludeRateLimit} disabled={!securityActiveScan} onChange={(e) => setSecurityIncludeRateLimit(e.target.checked)} />
+                </label>
+              </div>
+
+              {securityActiveScan && securityIncludeBola && (
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                    <label htmlFor="bola-session-a" style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>Session A Profile</label>
+                    <select id="bola-session-a" className="toolbar-select" value={securityBolaSessionA} onChange={(e) => setSecurityBolaSessionA(e.target.value)}>
+                      <option value="none">Select profile</option>
+                      {environments.map((env) => <option key={`bola-a-${env}`} value={env}>{env}</option>)}
+                    </select>
+                  </div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                    <label htmlFor="bola-session-b" style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>Session B Profile</label>
+                    <select id="bola-session-b" className="toolbar-select" value={securityBolaSessionB} onChange={(e) => setSecurityBolaSessionB(e.target.value)}>
+                      <option value="none">Select profile</option>
+                      {environments.map((env) => <option key={`bola-b-${env}`} value={env}>{env}</option>)}
+                    </select>
+                  </div>
+                </div>
+              )}
+
+              {securityActiveScan && securityIncludeRateLimit && (
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                    <label htmlFor="security-rate-requests" style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>Burst Request Count</label>
+                    <input id="security-rate-requests" type="text" className="kv-input" value={securityRateLimitRequests} onChange={(e) => setSecurityRateLimitRequests(e.target.value.replace(/\D/g, '') || '1')} />
+                  </div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                    <label htmlFor="security-rate-concurrency" style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>Burst Concurrency</label>
+                    <input id="security-rate-concurrency" type="text" className="kv-input" value={securityRateLimitConcurrency} onChange={(e) => setSecurityRateLimitConcurrency(e.target.value.replace(/\D/g, '') || '1')} />
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div className="dialog-buttons" style={{ marginTop: '12px' }}>
+              <button className="btn btn-secondary" onClick={() => setShowSecurityScanDialog(false)} disabled={isRunningSecurityScan}>Cancel</button>
+              <button className="btn btn-primary" onClick={handleRunSecurityScan} disabled={isRunningSecurityScan}>
+                {isRunningSecurityScan ? 'Running Scan...' : 'Run Scan'}
+              </button>
             </div>
           </div>
         </div>

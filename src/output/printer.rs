@@ -21,6 +21,7 @@ pub struct PrintOpts {
     pub theme: Theme,
     pub stream: bool,
     pub truncate: bool,
+    pub show_secrets: bool,
 }
 
 /// Pretty-print behavior.
@@ -104,6 +105,7 @@ pub fn build_print_opts(cli: &CliArgs, config: &Config) -> PrintOpts {
         theme,
         stream: cli.stream,
         truncate: true,
+        show_secrets: cli.show_secrets,
     }
 }
 
@@ -124,7 +126,15 @@ pub fn print_request(
         );
         for (name, value) in headers {
             let value = value.to_str().unwrap_or("<non-utf8>");
-            println!("{}", format_header_line(name.as_str(), value, &opts.theme));
+            let value_str = if opts.show_secrets {
+                value.to_string()
+            } else {
+                crate::headers::mask_header_value(name.as_str(), value)
+            };
+            println!(
+                "{}",
+                format_header_line(name.as_str(), &value_str, &opts.theme)
+            );
         }
         if opts.request_body {
             println!();
@@ -159,7 +169,15 @@ pub fn print_response(
         println!("{}", format_status_line(status, reason, &opts.theme));
         for (name, value) in headers {
             let value = value.to_str().unwrap_or("<non-utf8>");
-            println!("{}", format_header_line(name.as_str(), value, &opts.theme));
+            let value_str = if opts.show_secrets {
+                value.to_string()
+            } else {
+                crate::headers::mask_header_value(name.as_str(), value)
+            };
+            println!(
+                "{}",
+                format_header_line(name.as_str(), &value_str, &opts.theme)
+            );
         }
         if opts.response_body {
             println!();

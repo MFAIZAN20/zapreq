@@ -256,3 +256,23 @@ fn default_pretty() -> String {
 fn default_verify() -> bool {
     true
 }
+
+pub fn substitute_placeholders(input: &str, vars: &HashMap<String, String>) -> String {
+    let re = regex::Regex::new(r"\{\{([A-Za-z_][A-Za-z0-9_]*)\}\}|\{([A-Za-z_][A-Za-z0-9_]*)\}")
+        .expect("regex should compile");
+    re.replace_all(input, |caps: &regex::Captures<'_>| {
+        let key = caps
+            .get(1)
+            .or_else(|| caps.get(2))
+            .map(|m| m.as_str())
+            .unwrap_or_default();
+        if let Some(val) = vars.get(key) {
+            val.clone()
+        } else if let Ok(Some(secret_val)) = crate::secrets::get_secret(key) {
+            secret_val
+        } else {
+            caps[0].to_string()
+        }
+    })
+    .into_owned()
+}

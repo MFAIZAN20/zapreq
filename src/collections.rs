@@ -19,6 +19,8 @@ pub struct CollectionEntry {
     pub items: Vec<String>,
     #[serde(default)]
     pub headers: HashMap<String, String>,
+    #[serde(default)]
+    pub headers_v2: Option<Vec<crate::headers::Header>>,
     pub created: String,
 }
 
@@ -33,6 +35,8 @@ pub struct WorkspaceRequest {
     pub items: Vec<String>,
     #[serde(default)]
     pub headers: HashMap<String, String>,
+    #[serde(default)]
+    pub headers_v2: Option<Vec<crate::headers::Header>>,
     #[serde(default)]
     pub tests: Vec<String>,
     #[serde(default)]
@@ -83,14 +87,66 @@ pub struct MigrationReport {
     pub skipped_existing: usize,
 }
 
+type SavedHeaderState = (HashMap<String, String>, Option<Vec<crate::headers::Header>>);
+
+pub fn materialize_entry_items(entry: &CollectionEntry) -> Result<Vec<String>> {
+    let mut items = entry.items.clone();
+    let parsed = crate::items::parse_request_items(&items)?;
+    let existing_header_tokens = crate::headers::header_items(
+        &crate::headers::headers_from_parsed_items(&parsed, crate::headers::HeaderSource::User),
+    );
+
+    if let Some(headers_v2) = entry.headers_v2.as_deref() {
+        for token in crate::headers::header_items(headers_v2) {
+            if !existing_header_tokens
+                .iter()
+                .any(|existing| existing == &token)
+            {
+                items.push(token);
+            }
+        }
+        return Ok(items);
+    }
+
+    for (key, value) in &entry.headers {
+        items.push(format!("{key}:{value}"));
+    }
+    Ok(items)
+}
+
+fn derive_explicit_headers_from_cli(cli: &CliArgs) -> Result<SavedHeaderState> {
+    let parsed_items = crate::items::parse_request_items(&cli.request_items)?;
+    let mut headers = crate::headers::headers_from_parsed_items(
+        &parsed_items,
+        crate::headers::HeaderSource::User,
+    );
+    headers.extend(crate::headers::headers_from_curl_headers(
+        &cli.curl_headers,
+        crate::headers::HeaderSource::User,
+    ));
+
+    if headers.is_empty() {
+        return Ok((HashMap::new(), None));
+    }
+
+    let mut legacy = HashMap::new();
+    for header in headers.iter().filter(|header| header.enabled) {
+        legacy.insert(header.name.clone(), header.value.clone());
+    }
+
+    Ok((legacy, Some(headers)))
+}
+
 /// Saves a named legacy request collection from current CLI arguments.
 pub fn save_request(alias: &str, cli: &CliArgs) -> Result<()> {
+    let (headers, headers_v2) = derive_explicit_headers_from_cli(cli)?;
     let entry = CollectionEntry {
         alias: alias.to_string(),
         method: cli.method.clone(),
         url: cli.url.clone(),
         items: cli.request_items.clone(),
-        headers: HashMap::new(),
+        headers,
+        headers_v2,
         created: Utc::now().to_rfc3339(),
     };
     save_collection_entry(&entry)
@@ -256,6 +312,7 @@ pub fn add_request_to_workspace(
     };
 
     let now = Utc::now().to_rfc3339();
+    let (headers, headers_v2) = derive_explicit_headers_from_cli(cli)?;
     if let Some(existing) = ws
         .requests
         .iter_mut()
@@ -264,6 +321,8 @@ pub fn add_request_to_workspace(
         existing.method = cli.method.clone();
         existing.url = cli.url.clone();
         existing.items = cli.request_items.clone();
+        existing.headers = headers;
+        existing.headers_v2 = headers_v2;
         existing.updated = now.clone();
     } else {
         ws.requests.push(WorkspaceRequest {
@@ -272,7 +331,8 @@ pub fn add_request_to_workspace(
             method: cli.method.clone(),
             url: cli.url.clone(),
             items: cli.request_items.clone(),
-            headers: HashMap::new(),
+            headers,
+            headers_v2,
             tests: Vec::new(),
             pre_request_script: None,
             post_response_script: None,
@@ -311,6 +371,7 @@ pub fn load_workspace_request(workspace_name: &str, request_ref: &str) -> Result
         url: req.url.clone(),
         items: req.items.clone(),
         headers: req.headers.clone(),
+        headers_v2: req.headers_v2.clone(),
         created: req.created.clone(),
     })
 }
@@ -394,6 +455,7 @@ pub fn import_workspace(name: &str, path: &str) -> Result<Workspace> {
                 url: entry.url,
                 items: entry.items,
                 headers: entry.headers,
+                headers_v2: entry.headers_v2,
                 tests: Vec::new(),
                 pre_request_script: None,
                 post_response_script: None,
@@ -472,6 +534,7 @@ pub fn migrate_legacy_collections(workspace_name: &str) -> Result<MigrationRepor
             url: entry.url.clone(),
             items: entry.items.clone(),
             headers: entry.headers.clone(),
+            headers_v2: entry.headers_v2.clone(),
             tests: Vec::new(),
             pre_request_script: None,
             post_response_script: None,
@@ -581,11 +644,18 @@ fn workspace_to_postman(ws: &Workspace) -> Value {
         .requests
         .iter()
         .map(|req| {
-            let headers = req
-                .headers
-                .iter()
-                .map(|(k, v)| json!({ "key": k, "value": v }))
-                .collect::<Vec<_>>();
+            let headers = if let Some(headers_v2) = req.headers_v2.as_deref() {
+                headers_v2
+                    .iter()
+                    .filter(|header| header.enabled)
+                    .map(|header| json!({ "key": header.name, "value": header.value }))
+                    .collect::<Vec<_>>()
+            } else {
+                req.headers
+                    .iter()
+                    .map(|(k, v)| json!({ "key": k, "value": v }))
+                    .collect::<Vec<_>>()
+            };
             json!({
                 "name": req.name,
                 "request": {
@@ -671,6 +741,7 @@ fn parse_postman_import(name: &str, value: &Value) -> Result<Workspace> {
             url,
             items: Vec::new(),
             headers: HashMap::new(),
+            headers_v2: None,
             tests: Vec::new(),
             pre_request_script: None,
             post_response_script: None,
@@ -716,6 +787,7 @@ fn parse_openapi_import(name: &str, value: &Value) -> Result<Workspace> {
                 url: path.to_string(),
                 items: Vec::new(),
                 headers: HashMap::new(),
+                headers_v2: None,
                 tests: Vec::new(),
                 pre_request_script: None,
                 post_response_script: None,
@@ -770,6 +842,7 @@ fn workspace_to_collection_entries(workspace: &Workspace) -> Vec<CollectionEntry
             url: request.url.clone(),
             items: request.items.clone(),
             headers: request.headers.clone(),
+            headers_v2: request.headers_v2.clone(),
             created: request.created.clone(),
         })
         .collect()
@@ -840,9 +913,12 @@ fn _path_exists(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        parse_export_format, parse_openapi_import, parse_postman_import, workspace_to_openapi,
-        workspace_to_postman, Workspace, WorkspaceExportFormat, WorkspaceRequest,
+        materialize_entry_items, parse_export_format, parse_openapi_import, parse_postman_import,
+        workspace_to_openapi, workspace_to_postman, CollectionEntry, Workspace,
+        WorkspaceExportFormat, WorkspaceRequest,
     };
+    use crate::headers::{Header, HeaderSource};
+    use std::collections::HashMap;
 
     #[test]
     fn export_format_parse_works() {
@@ -866,6 +942,7 @@ mod tests {
                 url: "https://example.com/hello".to_string(),
                 items: vec![],
                 headers: Default::default(),
+                headers_v2: None,
                 tests: vec![],
                 pre_request_script: None,
                 post_response_script: None,
@@ -892,6 +969,7 @@ mod tests {
                 url: "https://example.com/hello".to_string(),
                 items: vec![],
                 headers: Default::default(),
+                headers_v2: None,
                 tests: vec![],
                 pre_request_script: None,
                 post_response_script: None,
@@ -939,5 +1017,43 @@ mod tests {
         let ws = parse_openapi_import("demo", &v).expect("openapi import should parse");
         assert_eq!(ws.requests.len(), 1);
         assert_eq!(ws.requests[0].method, "GET");
+    }
+
+    #[test]
+    fn materialize_entry_items_prefers_headers_v2_without_duplicate_injection() {
+        let entry = CollectionEntry {
+            alias: "demo".to_string(),
+            method: "GET".to_string(),
+            url: "https://example.com".to_string(),
+            items: vec!["Accept:application/json".to_string(), "page==1".to_string()],
+            headers: HashMap::new(),
+            headers_v2: Some(vec![
+                Header {
+                    name: "Accept".to_string(),
+                    value: "application/json".to_string(),
+                    enabled: true,
+                    sensitive: false,
+                    source: HeaderSource::User,
+                },
+                Header {
+                    name: "X-Trace".to_string(),
+                    value: "abc".to_string(),
+                    enabled: true,
+                    sensitive: false,
+                    source: HeaderSource::User,
+                },
+            ]),
+            created: "2026-01-01T00:00:00Z".to_string(),
+        };
+
+        let items = materialize_entry_items(&entry).expect("entry items should materialize");
+        assert_eq!(
+            items,
+            vec![
+                "Accept:application/json".to_string(),
+                "page==1".to_string(),
+                "X-Trace:abc".to_string(),
+            ]
+        );
     }
 }

@@ -142,6 +142,18 @@ pub enum SecurityCommand {
         severity: SeverityLevel,
         #[arg(long = "live")]
         live: bool,
+        #[arg(long = "active")]
+        active: bool,
+        #[arg(long = "env-profile")]
+        env_profile: Option<String>,
+        #[arg(long = "bola-session-a")]
+        bola_session_a: Option<String>,
+        #[arg(long = "bola-session-b")]
+        bola_session_b: Option<String>,
+        #[arg(long = "rate-limit-requests", default_value_t = 12)]
+        rate_limit_requests: u32,
+        #[arg(long = "rate-limit-concurrency", default_value_t = 4)]
+        rate_limit_concurrency: u32,
     },
 }
 
@@ -330,6 +342,23 @@ pub enum Command {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         request: Vec<String>,
     },
+    Preset {
+        #[command(subcommand)]
+        command: PresetCommand,
+    },
+}
+
+#[derive(Clone, Debug, Subcommand)]
+pub enum PresetCommand {
+    Create {
+        name: String,
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        headers: Vec<String>,
+    },
+    List,
+    Delete {
+        name: String,
+    },
 }
 
 /// CAUS-CLI-21, CAUS-CLI-22:
@@ -374,6 +403,11 @@ pub struct CliArgs {
     pub meta: bool,
     pub summary: bool,
     pub no_summary: bool,
+    pub curl_headers: Vec<String>,
+    pub preset: Vec<String>,
+    pub show_secrets: bool,
+    pub preview: bool,
+    pub dry_run: bool,
     pub command: Option<Command>,
 }
 
@@ -502,6 +536,21 @@ pub struct CliArgsRaw {
     #[arg(long = "no-summary", conflicts_with = "summary")]
     pub no_summary: bool,
 
+    #[arg(short = 'H', long = "header")]
+    pub curl_headers: Vec<String>,
+
+    #[arg(long = "preset")]
+    pub preset: Vec<String>,
+
+    #[arg(long = "show-secrets")]
+    pub show_secrets: bool,
+
+    #[arg(long = "preview")]
+    pub preview: bool,
+
+    #[arg(long = "dry-run")]
+    pub dry_run: bool,
+
     #[arg(long = "help", action = clap::ArgAction::HelpLong)]
     pub help: Option<bool>,
 }
@@ -575,6 +624,11 @@ where
             meta: false,
             summary: false,
             no_summary: false,
+            curl_headers: Vec::new(),
+            preset: Vec::new(),
+            show_secrets: false,
+            preview: false,
+            dry_run: false,
             command: Some(cmd.command),
         });
     }
@@ -637,6 +691,11 @@ where
         meta: raw.meta,
         summary: raw.summary,
         no_summary: raw.no_summary,
+        curl_headers: raw.curl_headers,
+        preset: raw.preset,
+        show_secrets: raw.show_secrets,
+        preview: raw.preview,
+        dry_run: raw.dry_run,
         command: None,
     })
 }

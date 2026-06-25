@@ -8,6 +8,8 @@ pub mod download;
 pub mod env_cmd;
 pub mod errors;
 pub mod format;
+pub mod header_presets;
+pub mod headers;
 pub mod items;
 pub mod localdb;
 pub mod notes;
