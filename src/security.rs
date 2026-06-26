@@ -129,6 +129,38 @@ struct RateLimitObservation {
     error: Option<String>,
 }
 
+struct RateLimitProbeMetrics {
+    throttled: usize,
+    server_errors: usize,
+    transport_errors: usize,
+    retry_after_seen: bool,
+    avg_ms: u64,
+}
+
+struct FindingSpec<'a> {
+    severity: &'a str,
+    category: &'a str,
+    title: &'a str,
+    impact: &'a str,
+    remediation: &'a str,
+    risk_score: u8,
+    evidence: String,
+}
+
+macro_rules! finding_spec {
+    ($severity:expr, $category:expr, $title:expr, $impact:expr, $remediation:expr, $risk_score:expr, $evidence:expr $(,)?) => {
+        FindingSpec {
+            severity: $severity,
+            category: $category,
+            title: $title,
+            impact: $impact,
+            remediation: $remediation,
+            risk_score: $risk_score,
+            evidence: ($evidence).into(),
+        }
+    };
+}
+
 pub fn run_scan(
     selector: &SourceSelector,
     threshold: SeverityLevel,
@@ -271,13 +303,15 @@ fn scan_record(record: &RequestRecord) -> Vec<SecurityFinding> {
     if url_lower.starts_with("http://") {
         findings.push(finding(
             record,
-            "high",
-            "static",
-            "Transport security disabled",
-            "Requests over plain HTTP can expose credentials and payloads in transit.",
-            "Use HTTPS endpoints and enforce TLS for all environments.",
-            82,
-            &record.url,
+            finding_spec!(
+                "high",
+                "static",
+                "Transport security disabled",
+                "Requests over plain HTTP can expose credentials and payloads in transit.",
+                "Use HTTPS endpoints and enforce TLS for all environments.",
+                82,
+                &record.url,
+            ),
         ));
     }
 
@@ -288,26 +322,30 @@ fn scan_record(record: &RequestRecord) -> Vec<SecurityFinding> {
     {
         findings.push(finding(
             record,
-            "medium",
-            "static",
-            "No authentication detected",
-            "Unauthenticated endpoints are more exposed to unauthorized access and BOLA-style abuse.",
-            "Document the intended auth model and require auth where the endpoint is not explicitly public.",
-            58,
-            "No auth header, bearer token, or api key found in the saved request.",
+            finding_spec!(
+                "medium",
+                "static",
+                "No authentication detected",
+                "Unauthenticated endpoints are more exposed to unauthorized access and BOLA-style abuse.",
+                "Document the intended auth model and require auth where the endpoint is not explicitly public.",
+                58,
+                "No auth header, bearer token, or api key found in the saved request.",
+            ),
         ));
     }
 
     if auth_header.to_ascii_lowercase().starts_with("basic ") {
         findings.push(finding(
             record,
-            "high",
-            "static",
-            "Basic authentication configured",
-            "Basic auth is easy to mishandle and often relies on long-lived credentials.",
-            "Prefer short-lived bearer tokens or signed requests with secret rotation.",
-            76,
-            &auth_header,
+            finding_spec!(
+                "high",
+                "static",
+                "Basic authentication configured",
+                "Basic auth is easy to mishandle and often relies on long-lived credentials.",
+                "Prefer short-lived bearer tokens or signed requests with secret rotation.",
+                76,
+                &auth_header,
+            ),
         ));
     }
 
@@ -321,39 +359,45 @@ fn scan_record(record: &RequestRecord) -> Vec<SecurityFinding> {
     {
         findings.push(finding(
             record,
-            "critical",
-            "static",
-            "Potential secret exposure",
-            "Hardcoded credentials or tokens can be extracted from local request definitions and copied into logs or exports.",
-            "Move credentials to the local secret store or environment profiles and scrub them from saved collections.",
-            95,
-            "Detected token-, key-, or credential-like content in URL, headers, or request items.",
+            finding_spec!(
+                "critical",
+                "static",
+                "Potential secret exposure",
+                "Hardcoded credentials or tokens can be extracted from local request definitions and copied into logs or exports.",
+                "Move credentials to the local secret store or environment profiles and scrub them from saved collections.",
+                95,
+                "Detected token-, key-, or credential-like content in URL, headers, or request items.",
+            ),
         ));
     }
 
     if has_sensitive_query(&record.url) {
         findings.push(finding(
             record,
-            "high",
-            "static",
-            "Sensitive data appears in query parameters",
-            "Secrets in URLs leak into logs, analytics systems, browser history, and proxies.",
-            "Send secrets in headers or request bodies instead of query parameters.",
-            84,
-            &record.url,
+            finding_spec!(
+                "high",
+                "static",
+                "Sensitive data appears in query parameters",
+                "Secrets in URLs leak into logs, analytics systems, browser history, and proxies.",
+                "Send secrets in headers or request bodies instead of query parameters.",
+                84,
+                &record.url,
+            ),
         ));
     }
 
     if has_object_identifier(&record.url) {
         findings.push(finding(
             record,
-            "medium",
-            "static",
-            "Potential object-level authorization risk",
-            "Endpoints with path identifiers commonly require strong authorization checks to prevent BOLA-style access.",
-            "Verify resource ownership and authorization checks for every identifier-based lookup.",
-            61,
-            &record.url,
+            finding_spec!(
+                "medium",
+                "static",
+                "Potential object-level authorization risk",
+                "Endpoints with path identifiers commonly require strong authorization checks to prevent BOLA-style access.",
+                "Verify resource ownership and authorization checks for every identifier-based lookup.",
+                61,
+                &record.url,
+            ),
         ));
     }
 
@@ -363,13 +407,15 @@ fn scan_record(record: &RequestRecord) -> Vec<SecurityFinding> {
     {
         findings.push(finding(
             record,
-            "low",
-            "static",
-            "Potential SSRF-sensitive input",
-            "Callback and redirect-style fields can be abused if upstream services fetch attacker-controlled URLs.",
-            "Validate destinations against an allowlist and reject internal/private network targets.",
-            38,
-            "callback/webhook/redirect style field found in request items.",
+            finding_spec!(
+                "low",
+                "static",
+                "Potential SSRF-sensitive input",
+                "Callback and redirect-style fields can be abused if upstream services fetch attacker-controlled URLs.",
+                "Validate destinations against an allowlist and reject internal/private network targets.",
+                38,
+                "callback/webhook/redirect style field found in request items.",
+            ),
         ));
     }
 
@@ -412,13 +458,15 @@ fn scan_live(
         return (
             vec![finding(
                 record,
-                "low",
-                "live",
-                "Live scan skipped",
-                "The response could not be fetched, so header-level checks were not completed.",
-                "Re-run the security scan when the endpoint is reachable from this machine.",
-                24,
-                "request execution failed during live scan",
+                finding_spec!(
+                    "low",
+                    "live",
+                    "Live scan skipped",
+                    "The response could not be fetched, so header-level checks were not completed.",
+                    "Re-run the security scan when the endpoint is reachable from this machine.",
+                    24,
+                    "request execution failed during live scan",
+                ),
             )],
             SecurityCheckSummary {
                 name: "Live Header Audit".to_string(),
@@ -440,13 +488,15 @@ fn scan_live(
     if record.url.starts_with("https://") && !headers.contains_key("strict-transport-security") {
         findings.push(finding(
             record,
-            "medium",
-            "live",
-            "Missing HSTS header",
-            "Without HSTS, browsers may downgrade or reattempt insecure transport.",
-            "Add Strict-Transport-Security with a long max-age and includeSubDomains where appropriate.",
-            55,
-            "strict-transport-security header not present",
+            finding_spec!(
+                "medium",
+                "live",
+                "Missing HSTS header",
+                "Without HSTS, browsers may downgrade or reattempt insecure transport.",
+                "Add Strict-Transport-Security with a long max-age and includeSubDomains where appropriate.",
+                55,
+                "strict-transport-security header not present",
+            ),
         ));
     }
 
@@ -461,13 +511,15 @@ fn scan_live(
         if !headers.contains_key(header) {
             findings.push(finding(
                 record,
-                "low",
-                "live",
-                title,
-                "Missing defensive headers can weaken browser-side protection for API consoles or HTML error pages.",
-                "Return the recommended security headers consistently from the gateway or service.",
-                29,
-                header,
+                finding_spec!(
+                    "low",
+                    "live",
+                    title,
+                    "Missing defensive headers can weaken browser-side protection for API consoles or HTML error pages.",
+                    "Return the recommended security headers consistently from the gateway or service.",
+                    29,
+                    header,
+                ),
             ));
         }
     }
@@ -478,13 +530,15 @@ fn scan_live(
     {
         findings.push(finding(
             record,
-            "low",
-            "live",
-            "No rate-limiting indicators observed",
-            "Missing rate-limit headers can make client-side backoff and abuse monitoring harder.",
-            "Expose standard rate-limit headers or document the throttling model for this API.",
-            31,
-            "x-ratelimit-limit/ratelimit-limit/retry-after not present",
+            finding_spec!(
+                "low",
+                "live",
+                "No rate-limiting indicators observed",
+                "Missing rate-limit headers can make client-side backoff and abuse monitoring harder.",
+                "Expose standard rate-limit headers or document the throttling model for this API.",
+                31,
+                "x-ratelimit-limit/ratelimit-limit/retry-after not present",
+            ),
         ));
     }
 
@@ -494,13 +548,15 @@ fn scan_live(
         if !sensitive_paths.is_empty() {
             findings.push(finding(
                 record,
-                "high",
-                "live",
-                "Potential excessive data exposure",
-                "The live response contained sensitive-looking fields that may not belong in routine client payloads.",
-                "Review response filtering, serializer policies, and least-data principles for this endpoint.",
-                79,
-                &sensitive_paths.join(", "),
+                finding_spec!(
+                    "high",
+                    "live",
+                    "Potential excessive data exposure",
+                    "The live response contained sensitive-looking fields that may not belong in routine client payloads.",
+                    "Review response filtering, serializer policies, and least-data principles for this endpoint.",
+                    79,
+                    sensitive_paths.join(", "),
+                ),
             ));
         }
     }
@@ -530,13 +586,15 @@ fn scan_active(
             return (
                 vec![finding(
                     record,
-                    "low",
-                    "active",
-                    "Active scan skipped",
-                    "The stored request items could not be parsed into a mutable active scan payload.",
-                    "Repair malformed request items and retry the active scan.",
-                    22,
-                    &format!("item parse failed: {err}"),
+                    finding_spec!(
+                        "low",
+                        "active",
+                        "Active scan skipped",
+                        "The stored request items could not be parsed into a mutable active scan payload.",
+                        "Repair malformed request items and retry the active scan.",
+                        22,
+                        format!("item parse failed: {err}"),
+                    ),
                 )],
                 vec![SecurityCheckSummary {
                     name: "Active Probe Preparation".to_string(),
@@ -556,13 +614,15 @@ fn scan_active(
             return (
                 vec![finding(
                     record,
-                    "low",
-                    "active",
-                    "Active scan skipped",
-                    "The baseline request failed, so mutation-based probes were not executed.",
-                    "Make sure the request succeeds normally before enabling active attack probes.",
-                    25,
-                    &err.to_string(),
+                    finding_spec!(
+                        "low",
+                        "active",
+                        "Active scan skipped",
+                        "The baseline request failed, so mutation-based probes were not executed.",
+                        "Make sure the request succeeds normally before enabling active attack probes.",
+                        25,
+                        err.to_string(),
+                    ),
                 )],
                 vec![SecurityCheckSummary {
                     name: "Active Baseline".to_string(),
@@ -763,13 +823,15 @@ fn run_bola_probe(
             return (
                 vec![finding(
                     record,
-                    "low",
-                    "bola",
-                    "BOLA test skipped",
-                    "Session A could not be resolved for an authorization comparison.",
-                    "Verify the environment profile and retry the BOLA test.",
-                    21,
-                    &err.to_string(),
+                    finding_spec!(
+                        "low",
+                        "bola",
+                        "BOLA test skipped",
+                        "Session A could not be resolved for an authorization comparison.",
+                        "Verify the environment profile and retry the BOLA test.",
+                        21,
+                        err.to_string(),
+                    ),
                 )],
                 SecurityCheckSummary {
                     name: "BOLA Probe".to_string(),
@@ -788,13 +850,15 @@ fn run_bola_probe(
             return (
                 vec![finding(
                     record,
-                    "low",
-                    "bola",
-                    "BOLA test skipped",
-                    "Session B could not be resolved for an authorization comparison.",
-                    "Verify the environment profile and retry the BOLA test.",
-                    21,
-                    &err.to_string(),
+                    finding_spec!(
+                        "low",
+                        "bola",
+                        "BOLA test skipped",
+                        "Session B could not be resolved for an authorization comparison.",
+                        "Verify the environment profile and retry the BOLA test.",
+                        21,
+                        err.to_string(),
+                    ),
                 )],
                 SecurityCheckSummary {
                     name: "BOLA Probe".to_string(),
@@ -814,13 +878,15 @@ fn run_bola_probe(
             return (
                 vec![finding(
                     record,
-                    "low",
-                    "bola",
-                    "BOLA test skipped",
-                    "The Session A baseline request did not succeed, so ownership comparison could not start.",
-                    "Verify the Session A profile can access the resource before running BOLA tests.",
-                    24,
-                    &err.to_string(),
+                    finding_spec!(
+                        "low",
+                        "bola",
+                        "BOLA test skipped",
+                        "The Session A baseline request did not succeed, so ownership comparison could not start.",
+                        "Verify the Session A profile can access the resource before running BOLA tests.",
+                        24,
+                        err.to_string(),
+                    ),
                 )],
                 SecurityCheckSummary {
                     name: "BOLA Probe".to_string(),
@@ -839,13 +905,15 @@ fn run_bola_probe(
             return (
                 vec![finding(
                     record,
-                    "low",
-                    "bola",
-                    "BOLA test skipped",
-                    "The Session B baseline request did not complete, so the authorization check is inconclusive.",
-                    "Verify the Session B profile and endpoint reachability before retrying.",
-                    24,
-                    &err.to_string(),
+                    finding_spec!(
+                        "low",
+                        "bola",
+                        "BOLA test skipped",
+                        "The Session B baseline request did not complete, so the authorization check is inconclusive.",
+                        "Verify the Session B profile and endpoint reachability before retrying.",
+                        24,
+                        err.to_string(),
+                    ),
                 )],
                 SecurityCheckSummary {
                     name: "BOLA Probe".to_string(),
@@ -866,19 +934,21 @@ fn run_bola_probe(
     {
         findings.push(finding(
             record,
-            "critical",
-            "bola",
-            "Possible broken object level authorization",
-            "Session B was able to access a path-scoped resource that was also readable by Session A.",
-            "Enforce per-object ownership checks for every path identifier and verify that cross-tenant requests fail closed.",
-            92,
-            &format!(
-                "SessionA(profile={profile_a}) -> {} in {}ms; SessionB(profile={profile_b}) -> {} in {}ms; body_similarity={:.2}",
-                session_a.status,
-                session_a.elapsed_ms,
-                session_b.status,
-                session_b.elapsed_ms,
-                body_similarity(&session_a.body, &session_b.body)
+            finding_spec!(
+                "critical",
+                "bola",
+                "Possible broken object level authorization",
+                "Session B was able to access a path-scoped resource that was also readable by Session A.",
+                "Enforce per-object ownership checks for every path identifier and verify that cross-tenant requests fail closed.",
+                92,
+                format!(
+                    "SessionA(profile={profile_a}) -> {} in {}ms; SessionB(profile={profile_b}) -> {} in {}ms; body_similarity={:.2}",
+                    session_a.status,
+                    session_a.elapsed_ms,
+                    session_b.status,
+                    session_b.elapsed_ms,
+                    body_similarity(&session_a.body, &session_b.body)
+                ),
             ),
         ));
     }
@@ -907,112 +977,57 @@ fn run_rate_limit_probe(
 ) -> (Vec<SecurityFinding>, SecurityCheckSummary) {
     let total_requests = options.rate_limit_requests.max(1);
     let concurrency = options.rate_limit_concurrency.max(1);
-    let counter = Arc::new(AtomicUsize::new(0));
-    let observations: Arc<Mutex<Vec<RateLimitObservation>>> = Arc::new(Mutex::new(Vec::new()));
-
-    let mut handles = Vec::with_capacity(concurrency as usize);
-    for _ in 0..concurrency {
-        let record = record.clone();
-        let items = parsed_items.to_vec();
-        let config = config.clone();
-        let counter = Arc::clone(&counter);
-        let observations = Arc::clone(&observations);
-
-        handles.push(thread::spawn(move || loop {
-            let idx = counter.fetch_add(1, Ordering::SeqCst);
-            if idx >= total_requests as usize {
-                break;
-            }
-            let started = Instant::now();
-            let entry = match observe_request(&record, items.clone(), &config) {
-                Ok(observed) => RateLimitObservation {
-                    status: Some(observed.status),
-                    headers: observed.headers,
-                    elapsed_ms: started.elapsed().as_millis() as u64,
-                    error: None,
-                },
-                Err(err) => RateLimitObservation {
-                    status: None,
-                    headers: Vec::new(),
-                    elapsed_ms: started.elapsed().as_millis() as u64,
-                    error: Some(err.to_string()),
-                },
-            };
-            observations
-                .lock()
-                .expect("rate-limit observation lock poisoned")
-                .push(entry);
-        }));
-    }
-
-    for handle in handles {
-        let _ = handle.join();
-    }
-
-    let collected = observations
-        .lock()
-        .expect("rate-limit observation lock poisoned")
-        .clone();
-    let throttled = collected
-        .iter()
-        .filter(|obs| matches!(obs.status, Some(429) | Some(503)))
-        .count();
-    let server_errors = collected
-        .iter()
-        .filter(|obs| matches!(obs.status, Some(code) if code >= 500))
-        .count();
-    let transport_errors = collected.iter().filter(|obs| obs.error.is_some()).count();
-    let retry_after_seen = collected
-        .iter()
-        .filter(|obs| matches!(obs.status, Some(429) | Some(503)))
-        .any(|obs| has_header(&obs.headers, "retry-after"));
-    let avg_ms = if collected.is_empty() {
-        0
-    } else {
-        collected.iter().map(|obs| obs.elapsed_ms).sum::<u64>() / collected.len() as u64
-    };
+    let collected =
+        collect_rate_limit_observations(record, parsed_items, total_requests, concurrency, config);
+    let metrics = summarize_rate_limit_observations(&collected);
 
     let mut findings = Vec::new();
-    if server_errors > throttled {
+    if metrics.server_errors > metrics.throttled {
         findings.push(finding(
             record,
-            "high",
-            "rate-limit",
-            "Burst load caused server errors before graceful throttling",
-            "The endpoint emitted 5xx responses under concurrent load instead of cleanly signaling throttling or backoff.",
-            "Introduce gateway or application rate limits that shed load with explicit 429/Retry-After responses before the service destabilizes.",
-            81,
-            &format!(
+            finding_spec!(
+                "high",
+                "rate-limit",
+                "Burst load caused server errors before graceful throttling",
+                "The endpoint emitted 5xx responses under concurrent load instead of cleanly signaling throttling or backoff.",
+                "Introduce gateway or application rate limits that shed load with explicit 429/Retry-After responses before the service destabilizes.",
+                81,
+                format!(
                 "requests={} concurrency={} throttled={} server_errors={} transport_errors={} avg_ms={}",
-                total_requests, concurrency, throttled, server_errors, transport_errors, avg_ms
+                total_requests, concurrency, metrics.throttled, metrics.server_errors, metrics.transport_errors, metrics.avg_ms
+                ),
             ),
         ));
-    } else if throttled > 0 && !retry_after_seen {
+    } else if metrics.throttled > 0 && !metrics.retry_after_seen {
         findings.push(finding(
             record,
-            "medium",
-            "rate-limit",
-            "Throttling observed without Retry-After guidance",
-            "Clients received throttled responses but no concrete backoff instruction, which can amplify retry storms.",
-            "Return Retry-After or standard RateLimit-* headers on throttled responses.",
-            57,
-            &format!(
+            finding_spec!(
+                "medium",
+                "rate-limit",
+                "Throttling observed without Retry-After guidance",
+                "Clients received throttled responses but no concrete backoff instruction, which can amplify retry storms.",
+                "Return Retry-After or standard RateLimit-* headers on throttled responses.",
+                57,
+                format!(
                 "requests={} concurrency={} throttled={} avg_ms={}",
-                total_requests, concurrency, throttled, avg_ms
+                total_requests, concurrency, metrics.throttled, metrics.avg_ms
+                ),
             ),
         ));
-    } else if throttled == 0 && transport_errors == 0 {
+    } else if metrics.throttled == 0 && metrics.transport_errors == 0 {
         findings.push(finding(
             record,
-            "low",
-            "rate-limit",
-            "No throttling signal observed during burst test",
-            "The configured burst completed without visible throttling, so abuse resistance remains unverified at this load level.",
-            "Verify gateway and application rate limits at a load profile that matches production expectations.",
-            34,
-            &format!(
+            finding_spec!(
+                "low",
+                "rate-limit",
+                "No throttling signal observed during burst test",
+                "The configured burst completed without visible throttling, so abuse resistance remains unverified at this load level.",
+                "Verify gateway and application rate limits at a load profile that matches production expectations.",
+                34,
+                format!(
                 "requests={} concurrency={} server_errors={} avg_ms={}",
-                total_requests, concurrency, server_errors, avg_ms
+                total_requests, concurrency, metrics.server_errors, metrics.avg_ms
+                ),
             ),
         ));
     }
@@ -1027,10 +1042,122 @@ fn run_rate_limit_probe(
             findings: findings.len(),
             note: format!(
                 "throttled={} server_errors={} transport_errors={} avg_ms={}",
-                throttled, server_errors, transport_errors, avg_ms
+                metrics.throttled, metrics.server_errors, metrics.transport_errors, metrics.avg_ms
             ),
         },
     )
+}
+
+fn collect_rate_limit_observations(
+    record: &RequestRecord,
+    parsed_items: &[RequestItem],
+    total_requests: u32,
+    concurrency: u32,
+    config: &Config,
+) -> Vec<RateLimitObservation> {
+    let counter = Arc::new(AtomicUsize::new(0));
+    let observations: Arc<Mutex<Vec<RateLimitObservation>>> = Arc::new(Mutex::new(Vec::new()));
+    let mut handles = Vec::with_capacity(concurrency as usize);
+
+    for _ in 0..concurrency {
+        handles.push(spawn_rate_limit_worker(
+            record.clone(),
+            parsed_items.to_vec(),
+            total_requests,
+            config.clone(),
+            Arc::clone(&counter),
+            Arc::clone(&observations),
+        ));
+    }
+
+    for handle in handles {
+        let _ = handle.join();
+    }
+
+    let collected = observations
+        .lock()
+        .expect("rate-limit observation lock poisoned")
+        .clone();
+    collected
+}
+
+fn spawn_rate_limit_worker(
+    record: RequestRecord,
+    items: Vec<RequestItem>,
+    total_requests: u32,
+    config: Config,
+    counter: Arc<AtomicUsize>,
+    observations: Arc<Mutex<Vec<RateLimitObservation>>>,
+) -> thread::JoinHandle<()> {
+    thread::spawn(move || loop {
+        let idx = counter.fetch_add(1, Ordering::SeqCst);
+        if idx >= total_requests as usize {
+            break;
+        }
+        let entry = observe_rate_limit_request(&record, &items, &config);
+        observations
+            .lock()
+            .expect("rate-limit observation lock poisoned")
+            .push(entry);
+    })
+}
+
+fn observe_rate_limit_request(
+    record: &RequestRecord,
+    items: &[RequestItem],
+    config: &Config,
+) -> RateLimitObservation {
+    let started = Instant::now();
+    match observe_request(record, items.to_vec(), config) {
+        Ok(observed) => RateLimitObservation {
+            status: Some(observed.status),
+            headers: observed.headers,
+            elapsed_ms: started.elapsed().as_millis() as u64,
+            error: None,
+        },
+        Err(err) => RateLimitObservation {
+            status: None,
+            headers: Vec::new(),
+            elapsed_ms: started.elapsed().as_millis() as u64,
+            error: Some(err.to_string()),
+        },
+    }
+}
+
+fn summarize_rate_limit_observations(
+    observations: &[RateLimitObservation],
+) -> RateLimitProbeMetrics {
+    RateLimitProbeMetrics {
+        throttled: observations
+            .iter()
+            .filter(|observation| matches!(observation.status, Some(429) | Some(503)))
+            .count(),
+        server_errors: observations
+            .iter()
+            .filter(|observation| matches!(observation.status, Some(code) if code >= 500))
+            .count(),
+        transport_errors: observations
+            .iter()
+            .filter(|observation| observation.error.is_some())
+            .count(),
+        retry_after_seen: observations
+            .iter()
+            .filter(|observation| matches!(observation.status, Some(429) | Some(503)))
+            .any(|observation| has_header(&observation.headers, "retry-after")),
+        avg_ms: average_observation_latency(observations),
+    }
+}
+
+fn average_observation_latency(observations: &[RateLimitObservation]) -> u64 {
+    if observations.is_empty() {
+        0
+    } else {
+        observations
+            .iter()
+            .map(|observation| observation.elapsed_ms)
+            .sum::<u64>()
+            / observations.len() as u64
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -1159,19 +1286,21 @@ fn analyze_sqli(
 
     Some(finding(
         record,
-        "high",
-        "sqli",
-        "Potential SQL injection behavior observed",
-        "A crafted probe changed the server-side behavior in a way that resembles unsafe query handling.",
-        "Use parameterized queries, central input validation, and defensive error handling to prevent SQL construction from user input.",
-        87,
-        &format!(
+        finding_spec!(
+            "high",
+            "sqli",
+            "Potential SQL injection behavior observed",
+            "A crafted probe changed the server-side behavior in a way that resembles unsafe query handling.",
+            "Use parameterized queries, central input validation, and defensive error handling to prevent SQL construction from user input.",
+            87,
+            format!(
             "{target} payload={payload:?} baseline={} mutated={} baseline_len={} mutated_len={} sql_error={}",
             baseline.status,
             observed.status,
             baseline.body.len(),
             observed.body.len(),
             observed_error.unwrap_or("none")
+            ),
         ),
     ))
 }
@@ -1200,17 +1329,19 @@ fn analyze_xss(
 
     Some(finding(
         record,
-        if html_like { "high" } else { "medium" },
-        "xss",
-        "Potential reflected cross-site scripting behavior observed",
-        "A tag-bearing payload was reflected without escaping, which can become executable in HTML-capable clients or admin tooling.",
-        "Encode output by context, reject dangerous markup in untrusted fields, and render user input as text rather than HTML.",
-        if html_like { 83 } else { 69 },
-        &format!(
+        finding_spec!(
+            if html_like { "high" } else { "medium" },
+            "xss",
+            "Potential reflected cross-site scripting behavior observed",
+            "A tag-bearing payload was reflected without escaping, which can become executable in HTML-capable clients or admin tooling.",
+            "Encode output by context, reject dangerous markup in untrusted fields, and render user input as text rather than HTML.",
+            if html_like { 83 } else { 69 },
+            format!(
             "{target} payload={payload:?} baseline_status={} mutated_status={} content_type={}",
             baseline.status,
             observed.status,
             observed.content_type.clone().unwrap_or_else(|| "unknown".to_string())
+            ),
         ),
     ))
 }
@@ -1356,25 +1487,16 @@ fn substitute_item_value(raw: &str, vars: &HashMap<String, String>) -> String {
     substitute_placeholders(token, vars)
 }
 
-fn finding(
-    record: &RequestRecord,
-    severity: &str,
-    category: &str,
-    title: &str,
-    impact: &str,
-    remediation: &str,
-    risk_score: u8,
-    evidence: &str,
-) -> SecurityFinding {
+fn finding(record: &RequestRecord, spec: FindingSpec<'_>) -> SecurityFinding {
     SecurityFinding {
         endpoint: record.source_label.clone(),
-        severity: severity.to_string(),
-        category: category.to_string(),
-        title: title.to_string(),
-        impact: impact.to_string(),
-        remediation: remediation.to_string(),
-        risk_score,
-        evidence: evidence.to_string(),
+        severity: spec.severity.to_string(),
+        category: spec.category.to_string(),
+        title: spec.title.to_string(),
+        impact: spec.impact.to_string(),
+        remediation: spec.remediation.to_string(),
+        risk_score: spec.risk_score,
+        evidence: spec.evidence,
         method: Some(record.method.clone()),
         url: Some(record.url.clone()),
     }
@@ -1590,8 +1712,9 @@ fn default_rate_limit_concurrency() -> u32 {
 #[cfg(test)]
 mod tests {
     use super::{
-        body_similarity, contains_aws_key, contains_jwt, has_object_identifier,
-        has_sensitive_query, response_length_delta, sql_error_excerpt,
+        average_observation_latency, body_similarity, contains_aws_key, contains_jwt,
+        has_object_identifier, has_sensitive_query, response_length_delta, sql_error_excerpt,
+        summarize_rate_limit_observations, RateLimitObservation,
     };
 
     #[test]
@@ -1635,5 +1758,37 @@ mod tests {
     #[test]
     fn body_similarity_detects_identical_payloads() {
         assert_eq!(body_similarity(br#"{"id":1}"#, br#"{"id":1}"#), 1.0);
+    }
+
+    #[test]
+    fn rate_limit_summary_tracks_throttling_retry_after_and_average_latency() {
+        let observations = vec![
+            RateLimitObservation {
+                status: Some(429),
+                headers: vec![("Retry-After".to_string(), "30".to_string())],
+                elapsed_ms: 90,
+                error: None,
+            },
+            RateLimitObservation {
+                status: Some(503),
+                headers: Vec::new(),
+                elapsed_ms: 150,
+                error: None,
+            },
+            RateLimitObservation {
+                status: Some(500),
+                headers: Vec::new(),
+                elapsed_ms: 210,
+                error: Some("boom".to_string()),
+            },
+        ];
+
+        let summary = summarize_rate_limit_observations(&observations);
+
+        assert_eq!(summary.throttled, 2);
+        assert_eq!(summary.server_errors, 2);
+        assert_eq!(summary.transport_errors, 1);
+        assert!(summary.retry_after_seen);
+        assert_eq!(summary.avg_ms, average_observation_latency(&observations));
     }
 }

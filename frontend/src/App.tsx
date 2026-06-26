@@ -1,8 +1,8 @@
-import { useState, useEffect, useRef, useCallback, useMemo, type ReactNode } from 'react';
-import { 
-  Play, Search, Plus, Trash, Globe, 
-  HelpCircle, Database, RefreshCw, 
-  SlidersHorizontal, AlertCircle, 
+import { useState, useEffect, useRef, useCallback, useMemo, type CSSProperties, type ReactNode } from 'react';
+import {
+  Play, Search, Plus, Trash, Globe,
+  HelpCircle, Database, RefreshCw,
+  SlidersHorizontal, AlertCircle,
   Terminal, ShieldCheck, Heart, CheckCircle2,
   Edit, Key, ChevronDown, ChevronRight, Folder, FolderPlus, Check, TerminalSquare,
   Eye, EyeOff, Save
@@ -26,6 +26,300 @@ declare global {
   }
 }
 
+const MOCK_VOID_COMMANDS = new Set([
+  'set_secret',
+  'delete_secret',
+  'import_workspace',
+  'export_workspace',
+  'save_test_case',
+  'delete_test_case',
+  'delete_request',
+  'create_preset',
+  'delete_preset',
+]);
+
+function mockPresetByName(name?: string) {
+  if (name === 'Global Defaults') {
+    return [
+      { name: 'Accept-Encoding', value: 'gzip, deflate, br', enabled: true, sensitive: false, source: 'Preset' },
+      { name: 'User-Agent', value: 'zapreq/0.1.7', enabled: true, sensitive: false, source: 'Preset' },
+    ];
+  }
+  if (name === 'Auth Tokens') {
+    return [
+      { name: 'Authorization', value: 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9', enabled: true, sensitive: true, source: 'Preset' },
+    ];
+  }
+  return [];
+}
+
+function mockStaticInvokeResponse(cmd: string, args?: InvokeArgs): unknown {
+  switch (cmd) {
+    case 'get_app_settings':
+      return { sidebar_width: 280, response_width: 420 };
+    case 'get_workspaces':
+      return [
+        {
+          name: 'Default Workspace',
+          description: 'My primary API testing workspace',
+          request_count: 2,
+          updated: '2026-06-16',
+          requests: [
+            {
+              id: 'req_1',
+              name: 'Get User Info',
+              method: 'GET',
+              url: 'https://httpbin.org/get',
+              items: ['Authorization:Bearer <YOUR_TOKEN>', 'limit==10'],
+            },
+            {
+              id: 'req_2',
+              name: 'Create User Profile',
+              method: 'POST',
+              url: 'https://httpbin.org/post',
+              items: ['name=Alice', 'role=developer', "hobbies:=['coding', 'design']"],
+            },
+          ],
+        },
+      ];
+    case 'get_secrets':
+      return ['MY_API_KEY', 'AWS_SECRET_ACCESS_KEY'];
+    case 'get_presets':
+      return ['Global Defaults', 'Auth Tokens', 'JSON APIs'];
+    case 'get_preset':
+      return mockPresetByName((args as Record<string, string> | undefined)?.name);
+    case 'get_merged_headers':
+      return (args as Record<string, unknown> | undefined)?.user_headers || [];
+    case 'get_header_suggestions':
+    case 'validate_request_headers':
+      return [];
+    case 'get_environments':
+      return ['development', 'production', 'staging'];
+    case 'get_reports':
+      return [
+        {
+          id: 101,
+          module: 'Tauri',
+          name: 'Get User Info',
+          summary: 'GET https://httpbin.org/get -> 200 OK (184 ms)',
+          payload_json: JSON.stringify({ url: 'https://httpbin.org/get', status: 200, elapsed_ms: 184 }, null, 2),
+          created_at: '2026-06-16T17:15:30Z',
+          method: 'GET',
+          url: 'https://httpbin.org/get',
+          final_url: 'https://httpbin.org/get',
+          status: 200,
+          reason: 'OK',
+          elapsed_ms: 184,
+          size_bytes: 345,
+          content_type: 'application/json',
+        },
+        {
+          id: 102,
+          module: 'CLI',
+          name: 'System Health Scan',
+          summary: 'POST https://httpbin.org/post -> 200 OK (312 ms)',
+          payload_json: JSON.stringify({ url: 'https://httpbin.org/post', status: 200, elapsed_ms: 312 }, null, 2),
+          created_at: '2026-06-16T16:40:12Z',
+          method: 'POST',
+          url: 'https://httpbin.org/post',
+          final_url: 'https://httpbin.org/post',
+          status: 200,
+          reason: 'OK',
+          elapsed_ms: 312,
+          size_bytes: 512,
+          content_type: 'application/json',
+        },
+        {
+          id: 103,
+          module: 'security',
+          name: 'tauri:Get User Info',
+          summary: '2 finding(s) across 1 request(s); active_scan=true',
+          payload_json: JSON.stringify({
+            source: 'tauri:Get User Info',
+            generated_at: '2026-06-22T12:30:00Z',
+            live_scan: true,
+            active_scan: true,
+            env_profile: 'staging',
+            request_count: 1,
+            checks: [
+              { name: 'Live Header Audit', status: 'completed', attempts: 1, findings: 1, note: 'Observed status 200', target: 'tauri:Get User Info' },
+              { name: 'SQL Injection Fuzzing', status: 'completed', attempts: 4, findings: 1, note: 'Compared 4 SQLi mutations against the baseline.', target: 'tauri:Get User Info' },
+              { name: 'Rate-Limit Burst Test', status: 'completed', attempts: 12, findings: 0, note: 'throttled=1 server_errors=0 transport_errors=0 avg_ms=188', target: 'tauri:Get User Info' },
+            ],
+            findings: [
+              {
+                severity: 'high',
+                category: 'sqli',
+                title: 'Potential SQL injection behavior observed',
+                risk_score: 87,
+                endpoint: 'tauri:Get User Info',
+                impact: 'A crafted probe changed the server-side behavior in a way that resembles unsafe query handling.',
+                remediation: 'Use parameterized queries and suppress raw database errors.',
+                evidence: `query:user payload="' OR '1'='1" baseline=200 mutated=500 baseline_len=188 mutated_len=421 sql_error=syntax error at or near`,
+                method: 'GET',
+                url: 'https://httpbin.org/get?user=1',
+              },
+              {
+                severity: 'low',
+                category: 'live',
+                title: 'No rate-limiting indicators observed',
+                risk_score: 31,
+                endpoint: 'tauri:Get User Info',
+                impact: 'Missing rate-limit headers can make client-side backoff and abuse monitoring harder.',
+                remediation: 'Expose standard rate-limit headers or document the throttling model for this API.',
+                evidence: 'x-ratelimit-limit/ratelimit-limit/retry-after not present',
+                method: 'GET',
+                url: 'https://httpbin.org/get?user=1',
+              },
+            ],
+          }, null, 2),
+          created_at: '2026-06-22T12:30:00Z',
+          method: null,
+          url: 'https://httpbin.org/get?user=1',
+          final_url: 'https://httpbin.org/get?user=1',
+          status: null,
+          reason: null,
+          elapsed_ms: null,
+          size_bytes: null,
+          content_type: null,
+        },
+      ];
+    case 'get_test_cases':
+      return [
+        {
+          suite: 'Auth Service',
+          name: 'Validate Valid Token',
+          source_label: 'Tauri Interface',
+          method: 'GET',
+          url: 'https://httpbin.org/get',
+          items: ['Authorization:Bearer <YOUR_TOKEN>'],
+          headers: [],
+          expect_status: 200,
+          expect_headers: ['Content-Type'],
+          expect_json: [],
+          expect_body_contains: ['Authorization'],
+          max_time_ms: 500,
+          created_at: '2026-06-16T12:00:00Z',
+          updated_at: '2026-06-16T12:00:00Z',
+        },
+        {
+          suite: 'User Profiles',
+          name: 'Register New User',
+          source_label: 'Tauri Interface',
+          method: 'POST',
+          url: 'https://httpbin.org/post',
+          items: ['name=Charlie'],
+          headers: [],
+          expect_status: 200,
+          expect_headers: [],
+          expect_json: [],
+          expect_body_contains: ['Charlie'],
+          max_time_ms: 800,
+          created_at: '2026-06-16T12:10:00Z',
+          updated_at: '2026-06-16T12:10:00Z',
+        },
+      ];
+    case 'get_test_runs':
+      return [
+        {
+          id: 1,
+          suite: 'Auth Service',
+          case_name: 'Validate Valid Token',
+          passed: true,
+          status_code: 200,
+          elapsed_ms: 120,
+          created_at: new Date(Date.now() - 3600000).toISOString(),
+        },
+        {
+          id: 2,
+          suite: 'User Profiles',
+          case_name: 'Register New User',
+          passed: true,
+          status_code: 200,
+          elapsed_ms: 210,
+          created_at: new Date(Date.now() - 7200000).toISOString(),
+        },
+      ];
+    default:
+      if (MOCK_VOID_COMMANDS.has(cmd)) {
+        return null;
+      }
+      return undefined;
+  }
+}
+
+async function mockAsyncInvokeResponse(cmd: string, args?: InvokeArgs): Promise<unknown> {
+  switch (cmd) {
+    case 'run_test_case':
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      return {
+        method: 'GET',
+        url: 'https://httpbin.org/get',
+        status: 200,
+        elapsed_ms: 120,
+        passed: true,
+        assertions: [
+          { assertion: 'status == 200', passed: true, details: 'status matched 200' },
+          { assertion: 'elapsed_ms <= 500', passed: true, details: '120 ms matched expected max 500 ms' },
+          { assertion: "body contains 'Authorization'", passed: true, details: 'substring found' },
+        ],
+      };
+    case 'run_test_suite': {
+      await new Promise((resolve) => setTimeout(resolve, 800));
+      const suiteName = (args?.suite as string) || 'Auth Service';
+      return {
+        suite: suiteName,
+        generated_at: new Date().toISOString(),
+        passed: 2,
+        failed: 0,
+        cases: [
+          { case_name: 'Validate Valid Token', passed: true, status: 200, elapsed_ms: 120 },
+          { case_name: 'Register New User', passed: true, status: 200, elapsed_ms: 210 },
+        ],
+      };
+    }
+    case 'run_security_scan':
+      await new Promise((resolve) => setTimeout(resolve, 900));
+      return { report_id: 901 };
+    case 'send_request': {
+      await new Promise((resolve) => setTimeout(resolve, 600));
+      const payload = (args as MockSendArgs | undefined)?.payload ?? {
+        method: 'GET',
+        url: 'https://httpbin.org/get',
+      };
+      return {
+        method: payload.method,
+        url: payload.url,
+        status: 200,
+        reason: 'OK',
+        final_url: payload.url,
+        headers: [
+          { key: 'Content-Type', value: 'application/json' },
+          { key: 'Server', value: 'gunicorn/19.9.0' },
+          { key: 'Access-Control-Allow-Origin', value: '*' },
+        ],
+        content_type: 'application/json',
+        body: JSON.stringify({
+          args: { limit: '10' },
+          headers: {
+            Authorization: 'Bearer <YOUR_TOKEN>',
+            Host: 'httpbin.org',
+          },
+          origin: '127.0.0.1',
+          url: payload.url,
+        }, null, 2),
+        body_is_base64: false,
+        elapsed_ms: 184,
+        elapsed_label: '184 ms',
+        size_bytes: 345,
+        size_label: '345 B',
+      };
+    }
+    default:
+      return undefined;
+  }
+}
+
 let invoke: InvokeFn;
 try {
   const tauriInternals = (globalThis as typeof globalThis & Window).__TAURI_INTERNALS__;
@@ -40,296 +334,13 @@ try {
   console.warn("Tauri API not available, running in mock/web mode.");
   invoke = async <T,>(cmd: string, args?: InvokeArgs): Promise<T> => {
     console.log(`[Mock Invoke] ${cmd}`, args);
-    
-    // Provide realistic mock data for local testing
-    if (cmd === 'get_app_settings') {
-      return { sidebar_width: 280, response_width: 420 } as T;
+    const staticResponse = mockStaticInvokeResponse(cmd, args);
+    if (staticResponse !== undefined) {
+      return staticResponse as T;
     }
-    if (cmd === 'get_workspaces') {
-      return [
-        {
-          name: "Default Workspace",
-          description: "My primary API testing workspace",
-          request_count: 2,
-          updated: "2026-06-16",
-          requests: [
-            {
-              id: "req_1",
-              name: "Get User Info",
-              method: "GET",
-              url: "https://httpbin.org/get",
-              items: ["Authorization:Bearer <YOUR_TOKEN>", "limit==10"]
-            },
-            {
-              id: "req_2",
-              name: "Create User Profile",
-              method: "POST",
-              url: "https://httpbin.org/post",
-              items: ["name=Alice", "role=developer", "hobbies:=['coding', 'design']"]
-            }
-          ]
-        }
-      ] as T;
-    }
-    if (cmd === 'get_secrets') {
-      return ["MY_API_KEY", "AWS_SECRET_ACCESS_KEY"] as T;
-    }
-    if (cmd === 'get_presets') {
-      return ["Global Defaults", "Auth Tokens", "JSON APIs"] as T;
-    }
-    if (cmd === 'get_preset') {
-      const presetName = (args as Record<string, any> | undefined)?.name;
-      if (presetName === 'Global Defaults') {
-        return [
-          { name: "Accept-Encoding", value: "gzip, deflate, br", enabled: true, sensitive: false, source: "Preset" },
-          { name: "User-Agent", value: "zapreq/0.1.5", enabled: true, sensitive: false, source: "Preset" }
-        ] as T;
-      }
-      if (presetName === 'Auth Tokens') {
-        return [
-          { name: "Authorization", value: "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9", enabled: true, sensitive: true, source: "Preset" }
-        ] as T;
-      }
-      return [] as T;
-    }
-    if (cmd === 'get_merged_headers') {
-      const userHeaders = (args as Record<string, any> | undefined)?.user_headers || [];
-      return userHeaders as T;
-    }
-    if (cmd === 'get_header_suggestions') {
-      return [] as T;
-    }
-    if (cmd === 'validate_request_headers') {
-      return [] as T;
-    }
-    if (
-      cmd === 'set_secret' || cmd === 'delete_secret' || 
-      cmd === 'import_workspace' || cmd === 'export_workspace' ||
-      cmd === 'save_test_case' || cmd === 'delete_test_case' ||
-      cmd === 'delete_request' || cmd === 'create_preset' ||
-      cmd === 'delete_preset'
-    ) {
-      return null as T;
-    }
-    if (cmd === 'get_environments') {
-      return ["development", "production", "staging"] as T;
-    }
-    if (cmd === 'get_reports') {
-      return [
-        {
-          id: 101,
-          module: "Tauri",
-          name: "Get User Info",
-          summary: "GET https://httpbin.org/get -> 200 OK (184 ms)",
-          payload_json: JSON.stringify({ url: "https://httpbin.org/get", status: 200, elapsed_ms: 184 }, null, 2),
-          created_at: "2026-06-16T17:15:30Z",
-          method: "GET",
-          url: "https://httpbin.org/get",
-          final_url: "https://httpbin.org/get",
-          status: 200,
-          reason: "OK",
-          elapsed_ms: 184,
-          size_bytes: 345,
-          content_type: "application/json"
-        },
-        {
-          id: 102,
-          module: "CLI",
-          name: "System Health Scan",
-          summary: "POST https://httpbin.org/post -> 200 OK (312 ms)",
-          payload_json: JSON.stringify({ url: "https://httpbin.org/post", status: 200, elapsed_ms: 312 }, null, 2),
-          created_at: "2026-06-16T16:40:12Z",
-          method: "POST",
-          url: "https://httpbin.org/post",
-          final_url: "https://httpbin.org/post",
-          status: 200,
-          reason: "OK",
-          elapsed_ms: 312,
-          size_bytes: 512,
-          content_type: "application/json"
-        },
-        {
-          id: 103,
-          module: "security",
-          name: "tauri:Get User Info",
-          summary: "2 finding(s) across 1 request(s); active_scan=true",
-          payload_json: JSON.stringify({
-            source: "tauri:Get User Info",
-            generated_at: "2026-06-22T12:30:00Z",
-            live_scan: true,
-            active_scan: true,
-            env_profile: "staging",
-            request_count: 1,
-            checks: [
-              { name: "Live Header Audit", status: "completed", attempts: 1, findings: 1, note: "Observed status 200", target: "tauri:Get User Info" },
-              { name: "SQL Injection Fuzzing", status: "completed", attempts: 4, findings: 1, note: "Compared 4 SQLi mutations against the baseline.", target: "tauri:Get User Info" },
-              { name: "Rate-Limit Burst Test", status: "completed", attempts: 12, findings: 0, note: "throttled=1 server_errors=0 transport_errors=0 avg_ms=188", target: "tauri:Get User Info" }
-            ],
-            findings: [
-              {
-                severity: "high",
-                category: "sqli",
-                title: "Potential SQL injection behavior observed",
-                risk_score: 87,
-                endpoint: "tauri:Get User Info",
-                impact: "A crafted probe changed the server-side behavior in a way that resembles unsafe query handling.",
-                remediation: "Use parameterized queries and suppress raw database errors.",
-                evidence: "query:user payload=\"' OR '1'='1\" baseline=200 mutated=500 baseline_len=188 mutated_len=421 sql_error=syntax error at or near",
-                method: "GET",
-                url: "https://httpbin.org/get?user=1"
-              },
-              {
-                severity: "low",
-                category: "live",
-                title: "No rate-limiting indicators observed",
-                risk_score: 31,
-                endpoint: "tauri:Get User Info",
-                impact: "Missing rate-limit headers can make client-side backoff and abuse monitoring harder.",
-                remediation: "Expose standard rate-limit headers or document the throttling model for this API.",
-                evidence: "x-ratelimit-limit/ratelimit-limit/retry-after not present",
-                method: "GET",
-                url: "https://httpbin.org/get?user=1"
-              }
-            ]
-          }, null, 2),
-          created_at: "2026-06-22T12:30:00Z",
-          method: null,
-          url: "https://httpbin.org/get?user=1",
-          final_url: "https://httpbin.org/get?user=1",
-          status: null,
-          reason: null,
-          elapsed_ms: null,
-          size_bytes: null,
-          content_type: null
-        }
-      ] as T;
-    }
-    if (cmd === 'get_test_cases') {
-      return [
-        {
-          suite: "Auth Service",
-          name: "Validate Valid Token",
-          source_label: "Tauri Interface",
-          method: "GET",
-          url: "https://httpbin.org/get",
-          items: ["Authorization:Bearer <YOUR_TOKEN>"],
-          headers: [],
-          expect_status: 200,
-          expect_headers: ["Content-Type"],
-          expect_json: [],
-          expect_body_contains: ["Authorization"],
-          max_time_ms: 500,
-          created_at: "2026-06-16T12:00:00Z",
-          updated_at: "2026-06-16T12:00:00Z"
-        },
-        {
-          suite: "User Profiles",
-          name: "Register New User",
-          source_label: "Tauri Interface",
-          method: "POST",
-          url: "https://httpbin.org/post",
-          items: ["name=Charlie"],
-          headers: [],
-          expect_status: 200,
-          expect_headers: [],
-          expect_json: [],
-          expect_body_contains: ["Charlie"],
-          max_time_ms: 800,
-          created_at: "2026-06-16T12:10:00Z",
-          updated_at: "2026-06-16T12:10:00Z"
-        }
-      ] as T;
-    }
-    if (cmd === 'run_test_case') {
-      await new Promise(r => setTimeout(r, 400));
-      return {
-        method: "GET",
-        url: "https://httpbin.org/get",
-        status: 200,
-        elapsed_ms: 120,
-        passed: true,
-        assertions: [
-          { assertion: "status == 200", passed: true, details: "status matched 200" },
-          { assertion: "elapsed_ms <= 500", passed: true, details: "120 ms matched expected max 500 ms" },
-          { assertion: "body contains 'Authorization'", passed: true, details: "substring found" }
-        ]
-      } as T;
-    }
-    if (cmd === 'run_test_suite') {
-      await new Promise(r => setTimeout(r, 800));
-      const suiteName = args?.suite as string || "Auth Service";
-      return {
-        suite: suiteName,
-        generated_at: new Date().toISOString(),
-        passed: 2,
-        failed: 0,
-        cases: [
-          { case_name: "Validate Valid Token", passed: true, status: 200, elapsed_ms: 120 },
-          { case_name: "Register New User", passed: true, status: 200, elapsed_ms: 210 }
-        ]
-      } as T;
-    }
-    if (cmd === 'get_test_runs') {
-      return [
-        {
-          id: 1,
-          suite: "Auth Service",
-          case_name: "Validate Valid Token",
-          passed: true,
-          status_code: 200,
-          elapsed_ms: 120,
-          created_at: new Date(Date.now() - 3600000).toISOString()
-        },
-        {
-          id: 2,
-          suite: "User Profiles",
-          case_name: "Register New User",
-          passed: true,
-          status_code: 200,
-          elapsed_ms: 210,
-          created_at: new Date(Date.now() - 7200000).toISOString()
-        }
-      ] as T;
-    }
-    if (cmd === 'run_security_scan') {
-      await new Promise(r => setTimeout(r, 900));
-      return {
-        report_id: 901
-      } as T;
-    }
-    if (cmd === 'send_request') {
-      await new Promise(r => setTimeout(r, 600));
-      const payload = (args as MockSendArgs | undefined)?.payload ?? {
-        method: "GET",
-        url: "https://httpbin.org/get"
-      };
-      return {
-        method: payload.method,
-        url: payload.url,
-        status: 200,
-        reason: "OK",
-        final_url: payload.url,
-        headers: [
-          { key: "Content-Type", value: "application/json" },
-          { key: "Server", value: "gunicorn/19.9.0" },
-          { key: "Access-Control-Allow-Origin", value: "*" }
-        ],
-        content_type: "application/json",
-        body: JSON.stringify({
-          args: { limit: "10" },
-          headers: {
-            Authorization: "Bearer <YOUR_TOKEN>",
-            Host: "httpbin.org"
-          },
-          origin: "127.0.0.1",
-          url: payload.url
-        }, null, 2),
-        body_is_base64: false,
-        elapsed_ms: 184,
-        elapsed_label: "184 ms",
-        size_bytes: 345,
-        size_label: "345 B"
-      } as T;
+    const asyncResponse = await mockAsyncInvokeResponse(cmd, args);
+    if (asyncResponse !== undefined) {
+      return asyncResponse as T;
     }
     return {} as T;
   };
@@ -475,6 +486,288 @@ interface ReportPayload {
 
 interface SecurityScanResult {
   report_id: number;
+}
+
+const HEADER_SOURCE_STYLES: Record<Header['source'], Pick<CSSProperties, 'backgroundColor' | 'color'>> = {
+  Preset: { backgroundColor: 'rgba(59, 130, 246, 0.15)', color: '#60a5fa' },
+  Environment: { backgroundColor: 'rgba(16, 185, 129, 0.15)', color: '#34d399' },
+  Auto: { backgroundColor: 'rgba(107, 114, 128, 0.15)', color: '#9ca3af' },
+  User: { backgroundColor: 'rgba(245, 158, 11, 0.15)', color: '#fbbf24' },
+};
+
+const SENSITIVE_HEADER_NAMES = new Set([
+  'authorization',
+  'proxy-authorization',
+  'x-api-key',
+  'api-key',
+  'cookie',
+  'set-cookie',
+  'x-auth-token',
+  'x-csrf-token',
+]);
+
+function headerSourceLabel(source?: Header['source'] | ParamRow['source']) {
+  return source ?? 'User';
+}
+
+function headerSourceBadgeStyle(source?: Header['source'] | ParamRow['source']): CSSProperties {
+  const label = headerSourceLabel(source);
+  const tone = HEADER_SOURCE_STYLES[label];
+  return {
+    fontSize: '9px',
+    fontWeight: 600,
+    padding: '2px 6px',
+    borderRadius: '4px',
+    textTransform: 'uppercase',
+    backgroundColor: tone.backgroundColor,
+    color: tone.color,
+  };
+}
+
+function headerWarningKey(scope: string, warning: HeaderWarning) {
+  return [scope, warning.severity, warning.name ?? 'global', warning.message].join('::');
+}
+
+function mergedHeaderKey(header: Header) {
+  return [
+    header.source,
+    header.name.toLowerCase(),
+    header.value,
+  ].join('::');
+}
+
+function securityCheckKey(check: SecurityCheckPayload) {
+  return [
+    check.name,
+    check.target,
+    check.status,
+    check.attempts,
+    check.findings,
+  ]
+    .filter((value) => value !== undefined && value !== null && value !== '')
+    .join('::');
+}
+
+function securityCheckStatusColor(status?: string) {
+  switch (status?.toLowerCase()) {
+    case 'completed':
+      return 'var(--color-get)';
+    case 'error':
+      return 'var(--color-delete)';
+    default:
+      return 'var(--color-post)';
+  }
+}
+
+function hasActiveBodyFields(bodyFields: BodyRow[]) {
+  return bodyFields.some((field) => field.enabled && field.key.trim() !== '');
+}
+
+function maskSensitiveValue(value: string) {
+  if (value.length <= 5) {
+    return '****';
+  }
+  return `${value.slice(0, 5)}...****`;
+}
+
+function maskResolvedHeaderValue(header: Header) {
+  const isSensitive = header.sensitive || SENSITIVE_HEADER_NAMES.has(header.name.toLowerCase());
+  if (!isSensitive || !header.value) {
+    return header.value;
+  }
+
+  const parts = header.value.split(' ');
+  if (parts.length > 1) {
+    const [scheme, ...restParts] = parts;
+    const rest = restParts.join(' ');
+    return `${scheme} ${maskSensitiveValue(rest)}`;
+  }
+
+  return maskSensitiveValue(header.value);
+}
+
+function HeaderSourceBadge({ source }: Readonly<{ source?: Header['source'] | ParamRow['source'] }>) {
+  return <span style={headerSourceBadgeStyle(source)}>{headerSourceLabel(source)}</span>;
+}
+
+function SecurityCheckCard({ check }: Readonly<{ check: SecurityCheckPayload }>) {
+  return (
+    <div style={{ backgroundColor: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: '8px', padding: '14px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', gap: '8px', alignItems: 'center' }}>
+        <strong style={{ fontSize: '13px', color: 'var(--text-primary)' }}>{check.name}</strong>
+        <span style={{ fontSize: '10px', textTransform: 'uppercase', fontWeight: '700', color: securityCheckStatusColor(check.status) }}>{check.status}</span>
+      </div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px', color: 'var(--text-secondary)' }}>
+        <span>Attempts: {check.attempts ?? 0}</span>
+        <span>Findings: {check.findings ?? 0}</span>
+      </div>
+      {check.note && <p style={{ fontSize: '12px', color: 'var(--text-muted)', lineHeight: '1.5' }}>{check.note}</p>}
+    </div>
+  );
+}
+
+function HeaderWarningList({ scope, warnings }: Readonly<{ scope: string; warnings: HeaderWarning[] }>) {
+  return (
+    <>
+      {warnings.map((warning) => (
+        <div
+          key={headerWarningKey(scope, warning)}
+          style={{
+            fontSize: '11px',
+            color: warning.severity === 'Error' ? '#ef4444' : '#f59e0b',
+            paddingLeft: '48px',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '4px',
+            marginBottom: '4px',
+          }}
+        >
+          <AlertCircle size={12} />
+          <span>{warning.message}</span>
+        </div>
+      ))}
+    </>
+  );
+}
+
+interface HeaderEditorRowProps {
+  row: ParamRow;
+  index: number;
+  visible: boolean;
+  warnings: HeaderWarning[];
+  valueSuggestions: string[];
+  onUpdate: <K extends keyof ParamRow>(index: number, field: K, value: ParamRow[K]) => void;
+  onDelete: (index: number) => void;
+  onToggleSecretVisibility: (id: string) => void;
+  onSetHidden: (id: string) => void;
+}
+
+function HeaderEditorRow({
+  row,
+  index,
+  visible,
+  warnings,
+  valueSuggestions,
+  onUpdate,
+  onDelete,
+  onToggleSecretVisibility,
+  onSetHidden,
+}: Readonly<HeaderEditorRowProps>) {
+  const valueListId = valueSuggestions.length > 0 ? `header-values-list-${row.id}` : undefined;
+  const toggleSecret = () => {
+    const isSecret = !row.secret;
+    onUpdate(index, 'secret', isSecret);
+    if (isSecret) {
+      onSetHidden(row.id);
+    }
+  };
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+      <div
+        className="table-row"
+        style={{
+          display: 'grid',
+          gridTemplateColumns: '38px minmax(0, 1.2fr) minmax(0, 1.8fr) 48px 80px 32px',
+          gap: '10px',
+          alignItems: 'center',
+          padding: '8px 12px',
+        }}
+      >
+        <div style={{ display: 'flex', justifyContent: 'center' }}>
+          <input
+            type="checkbox"
+            checked={row.enabled}
+            onChange={(e) => onUpdate(index, 'enabled', e.target.checked)}
+            style={{ cursor: 'pointer' }}
+          />
+        </div>
+
+        <input
+          type="text"
+          className="kv-input"
+          placeholder="key"
+          value={row.key}
+          onChange={(e) => onUpdate(index, 'key', e.target.value)}
+          list="common-headers-list"
+        />
+
+        <div style={{ display: 'flex', alignItems: 'center', gap: '4px', position: 'relative' }}>
+          <input
+            type={row.secret && !visible ? 'password' : 'text'}
+            className="kv-input"
+            placeholder="value"
+            value={row.value}
+            onChange={(e) => onUpdate(index, 'value', e.target.value)}
+            list={valueListId}
+            style={{ flex: 1 }}
+          />
+          {valueListId && (
+            <datalist id={valueListId}>
+              {valueSuggestions.map((value) => <option key={value} value={value} />)}
+            </datalist>
+          )}
+        </div>
+
+        <div style={{ display: 'flex', justifyContent: 'center', gap: '4px' }}>
+          <button
+            type="button"
+            className="icon-btn"
+            onClick={toggleSecret}
+            title={row.secret ? 'Mark as non-sensitive' : 'Mark as sensitive/secret'}
+            style={{ color: row.secret ? '#f59e0b' : 'var(--text-muted)', background: 'none', border: 'none', cursor: 'pointer' }}
+          >
+            <Key size={14} />
+          </button>
+          {row.secret && (
+            <button
+              type="button"
+              className="icon-btn"
+              onClick={() => onToggleSecretVisibility(row.id)}
+              title={visible ? 'Hide secret value' : 'Show secret value'}
+              style={{ color: '#f59e0b', background: 'none', border: 'none', cursor: 'pointer' }}
+            >
+              {visible ? <EyeOff size={14} /> : <Eye size={14} />}
+            </button>
+          )}
+        </div>
+
+        <div style={{ display: 'flex', justifyContent: 'center' }}>
+          <HeaderSourceBadge source={row.source} />
+        </div>
+
+        <button className="icon-btn" onClick={() => onDelete(index)}><Trash size={14} /></button>
+      </div>
+
+      <HeaderWarningList scope={row.id} warnings={warnings} />
+    </div>
+  );
+}
+
+function ResolvedHeaderPreviewRow({ header }: Readonly<{ header: Header }>) {
+  return (
+    <div
+      style={{
+        display: 'flex',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        padding: '6px 8px',
+        backgroundColor: 'var(--bg-primary)',
+        borderRadius: '4px',
+        fontSize: '12px',
+      }}
+    >
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flex: 1, minWidth: 0 }}>
+        <span style={{ fontWeight: 600, color: 'var(--text-secondary)', flexShrink: 0 }}>{header.name}:</span>
+        <span style={{ color: 'var(--text-muted)', fontFamily: 'monospace', textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap' }} title={header.value}>
+          {maskResolvedHeaderValue(header)}
+        </span>
+      </div>
+      <div style={{ marginLeft: '8px' }}>
+        <HeaderSourceBadge source={header.source} />
+      </div>
+    </div>
+  );
 }
 
 interface StoredTestCase {
@@ -773,13 +1066,13 @@ function tokenizeCurlInput(input: string): string[] {
   if (!cleanInput.toLowerCase().startsWith('curl')) {
     return [];
   }
-  
+
   const args: string[] = [];
   let current = '';
   let inDoubleQuote = false;
   let inSingleQuote = false;
   let escaped = false;
-  
+
   for (const char of cleanInput) {
     if (escaped) {
       current += char;
@@ -844,13 +1137,13 @@ function parseCurlCommand(input: string) {
   if (args.length === 0) {
     return null;
   }
-  
+
   let method = 'GET';
   let url = '';
   const headers: { key: string; value: string }[] = [];
   const bodyFields: { key: string; value: string }[] = [];
   let rawBody = '';
-  
+
   for (let i = 1; i < args.length; i++) {
     const arg = args[i];
     if (arg === '-X' || arg === '--request') {
@@ -871,7 +1164,7 @@ function parseCurlCommand(input: string) {
       url = arg.replace(/^["']|["']$/g, '');
     }
   }
-  
+
   return { method: method.toUpperCase(), url, headers, bodyFields, rawBody };
 }
 
@@ -982,7 +1275,7 @@ function stripHtmlTagContent(html: string, tagName: string): string {
   const tagLower = `<${tagName}`;
   const endTag = `</${tagName}>`;
   const endTagLen = endTag.length;
-  
+
   while (true) {
     const startIdx = result.toLowerCase().indexOf(tagLower);
     if (startIdx === -1) break;
@@ -1016,7 +1309,7 @@ function cleanHtmlResponse(bodyText: string, status: number, reason: string): st
   const titleText = extractHtmlTagContent(bodyText, 'title');
   const headingText = extractHtmlTagContent(bodyText, 'h1');
   const rawTitle = headingText || titleText || '';
-  
+
   let titleCleaned = '';
   let inTitleTag = false;
   for (const char of rawTitle) {
@@ -1271,27 +1564,9 @@ function renderSecurityReportContent(parsedPayload: ReportPayload, fallbackSourc
 
       {parsedPayload.checks && parsedPayload.checks.length > 0 && (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '12px' }}>
-          {parsedPayload.checks.map((check, idx) => {
-            const status = check.status?.toLowerCase() || 'completed';
-            const statusColor = status === 'completed'
-              ? 'var(--color-get)'
-              : status === 'error'
-                ? 'var(--color-delete)'
-                : 'var(--color-post)';
-            return (
-              <div key={`${check.name || 'check'}-${idx}`} style={{ backgroundColor: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: '8px', padding: '14px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', gap: '8px', alignItems: 'center' }}>
-                  <strong style={{ fontSize: '13px', color: 'var(--text-primary)' }}>{check.name}</strong>
-                  <span style={{ fontSize: '10px', textTransform: 'uppercase', fontWeight: '700', color: statusColor }}>{check.status}</span>
-                </div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px', color: 'var(--text-secondary)' }}>
-                  <span>Attempts: {check.attempts ?? 0}</span>
-                  <span>Findings: {check.findings ?? 0}</span>
-                </div>
-                {check.note && <p style={{ fontSize: '12px', color: 'var(--text-muted)', lineHeight: '1.5' }}>{check.note}</p>}
-              </div>
-            );
-          })}
+          {parsedPayload.checks.map((check) => (
+            <SecurityCheckCard key={securityCheckKey(check)} check={check} />
+          ))}
         </div>
       )}
 
@@ -2101,14 +2376,14 @@ function buildSuiteTree(testCases: StoredTestCase[]): SuiteTreeNode[] {
   for (const tc of testCases) {
     const suiteName = tc.suite || 'Default';
     const segments = suiteName.split('/').map(s => s.trim()).filter(Boolean);
-    
+
     let current = root;
     let currentPath = '';
     let segIndex = 0;
-    
+
     for (const seg of segments) {
       currentPath = currentPath ? `${currentPath} / ${seg}` : seg;
-      
+
       let child = current.children.find(c => c.name === seg);
       if (!child) {
         child = {
@@ -2120,7 +2395,7 @@ function buildSuiteTree(testCases: StoredTestCase[]): SuiteTreeNode[] {
         };
         current.children.push(child);
       }
-      
+
       if (segIndex === segments.length - 1) {
         child.cases.push(tc);
       }
@@ -2151,21 +2426,21 @@ function TestCasesDonutChart({ passed, failed, untested }: Readonly<{ passed: nu
       </div>
     );
   }
-  
+
   const r = 40;
   const circumference = 2 * Math.PI * r;
-  
+
   const pPct = passed / total;
   const fPct = failed / total;
   const uPct = untested / total;
-  
+
   const pLen = pPct * circumference;
   const fLen = fPct * circumference;
-  
+
   const pOffset = circumference;
   const fOffset = circumference - pLen;
   const uOffset = circumference - pLen - fLen;
-  
+
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: '48px', padding: '16px', backgroundColor: 'var(--bg-secondary)', borderRadius: '8px', border: '1px solid var(--border-color)', minHeight: '180px' }}>
       <div style={{ position: 'relative', width: '130px', height: '130px', flexShrink: 0 }}>
@@ -2231,18 +2506,18 @@ function TestCasesDonutChart({ passed, failed, untested }: Readonly<{ passed: nu
           <span style={{ fontSize: '9px', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Tests</span>
         </div>
       </div>
-      
+
       <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', flex: 1 }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '6px 12px', backgroundColor: 'rgba(16, 185, 129, 0.08)', borderLeft: '3px solid var(--color-get)', borderRadius: '0 4px 4px 0' }}>
           <span style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>Passed</span>
           <span style={{ fontSize: '15px', fontWeight: 'bold', color: 'var(--color-get)' }}>{passed} ({Math.round(pPct*100)}%)</span>
         </div>
-        
+
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '6px 12px', backgroundColor: 'rgba(239, 68, 68, 0.08)', borderLeft: '3px solid var(--color-delete)', borderRadius: '0 4px 4px 0' }}>
           <span style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>Failed</span>
           <span style={{ fontSize: '15px', fontWeight: 'bold', color: 'var(--color-delete)' }}>{failed} ({Math.round(fPct*100)}%)</span>
         </div>
-        
+
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '6px 12px', backgroundColor: 'rgba(107, 114, 128, 0.08)', borderLeft: '3px solid #6b7280', borderRadius: '0 4px 4px 0' }}>
           <span style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>Untested</span>
           <span style={{ fontSize: '15px', fontWeight: 'bold', color: '#9ca3af' }}>{untested} ({Math.round(uPct*100)}%)</span>
@@ -2346,7 +2621,7 @@ export default function App() {
   const [securityRateLimitRequests, setSecurityRateLimitRequests] = useState("12");
   const [securityRateLimitConcurrency, setSecurityRateLimitConcurrency] = useState("4");
   const [isRunningSecurityScan, setIsRunningSecurityScan] = useState(false);
-  
+
   // Curl Clipboard Feedback State
   const [copiedCurl, setCopiedCurl] = useState(false);
 
@@ -2452,7 +2727,7 @@ export default function App() {
         setHeaderWarnings([]);
         return;
       }
-      
+
       const items = buildRequestItems(queryParams, [], bodyFields, authType, authToken);
       const userHeadersList = mapParamRowsToHeaders(headers);
       const envProfile = selectedEnv === 'none' ? null : selectedEnv;
@@ -2465,23 +2740,20 @@ export default function App() {
           user_headers: userHeadersList,
           env_profile: envProfile
         });
-        
+
         if (!active) return;
         setMergedHeaders(merged);
 
-        let bodyType = "none";
-        if (bodyFields.length > 0 && bodyFields.some(b => b.enabled && b.key.trim() !== '')) {
-          bodyType = "json";
-        }
+        const bodyType = hasActiveBodyFields(bodyFields) ? 'json' : 'none';
         const bodyContent = bodyType === "json" ? buildBodyPreview(bodyFields) : null;
-        
+
         const warnings = await invoke<HeaderWarning[]>('validate_request_headers', {
           headers: merged,
           url: trimmedUrl,
           body_type: bodyType,
           body_content: bodyContent
         });
-        
+
         if (!active) return;
         setHeaderWarnings(warnings);
       } catch (err) {
@@ -2492,7 +2764,7 @@ export default function App() {
     const timer = setTimeout(() => {
       void fetchMergedAndWarnings();
     }, 250);
-    
+
     return () => {
       active = false;
       clearTimeout(timer);
@@ -2503,33 +2775,44 @@ export default function App() {
   const toggleSecretVisibility = (id: string) => {
     setVisibleSecrets(prev => ({ ...prev, [id]: !prev[id] }));
   };
+  const hideSecretVisibility = useCallback((id: string) => {
+    setVisibleSecrets((prev) => ({ ...prev, [id]: false }));
+  }, []);
+  const warningsForHeaderRow = useCallback((headerKey: string) => (
+    headerWarnings.filter(
+      (warning) => warning.name?.toLowerCase() === headerKey.toLowerCase(),
+    )
+  ), [headerWarnings]);
+  const valueSuggestionsForHeaderRow = useCallback((headerKey: string) => (
+    headerSuggestionMap.get(headerKey.trim().toLowerCase())?.common_values ?? []
+  ), [headerSuggestionMap]);
 
   const handleApplyPreset = async () => {
     if (!selectedPreset) return;
     try {
       const presetHeaders = await invoke<Header[]>('get_preset', { name: selectedPreset });
       const newRows = mapHeadersToParamRows(presetHeaders);
-      
+
       const merged = [...headers];
       for (const row of newRows) {
         if (!row.key.trim()) continue;
         const existingIdx = merged.findIndex(h => h.key.toLowerCase() === row.key.toLowerCase());
-        if (existingIdx !== -1) {
+        if (existingIdx >= 0) {
           merged[existingIdx] = { ...merged[existingIdx], value: row.value, enabled: row.enabled, secret: row.secret, source: 'Preset' };
         } else {
           const emptyIdx = merged.findIndex(h => h.key.trim() === '');
-          if (emptyIdx !== -1) {
+          if (emptyIdx >= 0) {
             merged.splice(emptyIdx, 0, row);
           } else {
             merged.push(row);
           }
         }
       }
-      
-      if (merged.length === 0 || merged[merged.length - 1].key.trim() !== '') {
+
+      if (merged.at(-1)?.key.trim() !== '') {
         merged.push(createParamRow());
       }
-      
+
       setHeaders(merged);
     } catch (e) {
       alert(`Error loading preset: ${e}`);
@@ -2540,13 +2823,13 @@ export default function App() {
     const name = prompt("Enter a name for the new header preset:");
     if (!name?.trim()) return;
     const cleanName = name.trim();
-    
+
     const userHeadersList = mapParamRowsToHeaders(headers);
     if (userHeadersList.length === 0) {
       alert("Please configure at least one header to save as a preset.");
       return;
     }
-    
+
     try {
       await invoke('create_preset', { name: cleanName, headers: userHeadersList });
       const presets = await invoke<string[]>('get_presets');
@@ -2703,7 +2986,7 @@ export default function App() {
       alert("Suite name and case name are required.");
       return;
     }
-    
+
     let method = tcRequestMethod;
     let url = tcRequestUrl;
     let items = tcRequestItems;
@@ -2734,7 +3017,7 @@ export default function App() {
       await invoke('save_test_case', { payload });
       alert(`Test case '${testCaseName}' saved in suite '${testSuiteName}'!`);
       setShowAddTestDialog(false);
-      
+
       const dbTests = await invoke<StoredTestCase[]>('get_test_cases');
       setTestCases(dbTests);
     } catch (e) {
@@ -2751,7 +3034,7 @@ export default function App() {
       await invoke('delete_test_case', { suite, name });
       const dbTests = await invoke<StoredTestCase[]>('get_test_cases');
       setTestCases(dbTests);
-      
+
       if (selectedTestCase?.suite === suite && selectedTestCase?.name === name) {
         setSelectedTestCase(null);
         setRunReport(null);
@@ -2765,20 +3048,20 @@ export default function App() {
   const handleRunTestSuite = async (suitePath: string) => {
     const casesToRun = testCases.filter(tc => tc.suite === suitePath || tc.suite.startsWith(suitePath + ' / '));
     if (casesToRun.length === 0) return;
-    
+
     setIsRunningSuite(true);
     setSuiteProgress({ current: 0, total: casesToRun.length, caseName: "" });
     setSuiteReport(null);
-    
+
     const results: Array<{ case_name: string; passed: boolean; status: number; elapsed_ms: number }> = [];
     let passed = 0;
     let failed = 0;
-    
+
     try {
       for (let i = 0; i < casesToRun.length; i++) {
         const tc = casesToRun[i];
         setSuiteProgress({ current: i + 1, total: casesToRun.length, caseName: tc.name });
-        
+
         try {
           const report = await invoke<TestReport>('run_test_case', {
             payload: { suite: tc.suite, name: tc.name }
@@ -2801,7 +3084,7 @@ export default function App() {
           failed++;
         }
       }
-      
+
       setSuiteReport({
         suite: suitePath,
         generated_at: new Date().toISOString(),
@@ -2809,7 +3092,7 @@ export default function App() {
         failed,
         cases: results
       });
-      
+
       const dbRuns = await invoke<TestRunDto[]>('get_test_runs');
       setTestRuns(dbRuns);
     } catch (e) {
@@ -2835,7 +3118,7 @@ export default function App() {
       setTestCases(dbTests);
       const dbRuns = await invoke<TestRunDto[]>('get_test_runs');
       setTestRuns(dbRuns);
-      
+
       if (selectedSuitePath === suitePath || selectedSuitePath?.startsWith(suitePath + ' / ')) {
         setSelectedSuitePath(null);
         setSuiteReport(null);
@@ -2852,9 +3135,9 @@ export default function App() {
       return;
     }
     try {
-      await invoke('import_workspace', { 
-        name: importWsName.trim(), 
-        path: importFilePath.trim() 
+      await invoke('import_workspace', {
+        name: importWsName.trim(),
+        path: importFilePath.trim()
       });
       const ws = await invoke<WorkspaceDto[]>('get_workspaces');
       setWorkspaces(ws);
@@ -2896,9 +3179,9 @@ export default function App() {
       return;
     }
     try {
-      await invoke('set_secret', { 
-        key: newSecretKey.trim(), 
-        value: newSecretVal.trim() 
+      await invoke('set_secret', {
+        key: newSecretKey.trim(),
+        value: newSecretVal.trim()
       });
       setNewSecretKey("");
       setNewSecretVal("");
@@ -2937,7 +3220,7 @@ export default function App() {
           headers: []
         }
       });
-      
+
       setWorkspaces(prev => prev.map(w => {
         if (w.name === activeWorkspaceName) {
           return { ...w, requests: [...w.requests, saved] };
@@ -2955,7 +3238,7 @@ export default function App() {
     if (!name?.trim()) return;
     const cleanName = normalizeDisplayPath(name);
     if (!cleanName) return;
-    
+
     setCustomEmptyFolders((prev) => addEmptyFolderIfMissing(prev, cleanName));
   };
 
@@ -2974,7 +3257,7 @@ export default function App() {
           headers: []
         }
       });
-      
+
       setWorkspaces(prev => prev.map(w => {
         if (w.name === activeWorkspaceName) {
           return { ...w, requests: [...w.requests, saved] };
@@ -2991,15 +3274,15 @@ export default function App() {
     if (!currentWorkspace) return;
     const req = currentWorkspace.requests.find(r => r.id === requestId);
     if (!req) return;
-    
+
     const parts = splitDisplayPath(req.name);
     const leafName = parts.at(-1) || 'Untitled';
     const newName = targetFolder ? `${targetFolder} / ${leafName}` : leafName;
-    
+
     if (req.name === newName) return;
-    
+
     const oldFolder = parts.slice(0, -1).join(' / ');
-    
+
     try {
       const saved = await invoke<RequestDto>('save_request', {
         payload: {
@@ -3014,11 +3297,11 @@ export default function App() {
           post_response_script: req.post_response_script || null
         }
       });
-      
+
       if (targetFolder) {
         setCustomEmptyFolders(prev => prev.filter(f => f !== targetFolder));
       }
-      
+
       if (oldFolder && currentWorkspace) {
         const remainingInOldFolder = currentWorkspace.requests.filter((request) =>
           request.id !== req.id && requestBelongsToPath(request.name, oldFolder)
@@ -3027,12 +3310,12 @@ export default function App() {
           setCustomEmptyFolders((prev) => addEmptyFolderIfMissing(prev, oldFolder));
         }
       }
-      
+
       if (activeRequest?.id === req.id) {
         setActiveRequest(saved);
         setRequestName(newName);
       }
-      
+
       loadInitialData();
     } catch (e) {
       alert(`Failed to move request: ${e}`);
@@ -3045,10 +3328,10 @@ export default function App() {
     }
     const parts = splitDisplayPath(name);
     const parentFolder = parts.slice(0, -1).join(' / ');
-    
+
     try {
       await invoke('delete_request', { workspace: activeWorkspaceName, id: reqId });
-      
+
       if (parentFolder && currentWorkspace) {
         const remainingInFolder = currentWorkspace.requests.filter((request) =>
           request.id !== reqId && requestBelongsToPath(request.name, parentFolder)
@@ -3057,7 +3340,7 @@ export default function App() {
           setCustomEmptyFolders((prev) => addEmptyFolderIfMissing(prev, parentFolder));
         }
       }
-      
+
       if (activeRequest?.id === reqId) {
         setActiveRequest(null);
         setResponse(null);
@@ -3073,16 +3356,16 @@ export default function App() {
     const requestsToDelete = currentWorkspace.requests.filter((request) =>
       requestBelongsToPath(request.name, folderPath)
     );
-    
+
     const isEmpty = requestsToDelete.length === 0;
-    const msg = isEmpty 
+    const msg = isEmpty
       ? `Are you sure you want to delete empty folder '${folderPath}'?`
       : `Are you sure you want to delete folder '${folderPath}' and all its ${requestsToDelete.length} requests?`;
-      
+
     if (!confirm(msg)) {
       return;
     }
-    
+
     try {
       if (!isEmpty) {
         for (const r of requestsToDelete) {
@@ -3091,9 +3374,9 @@ export default function App() {
           }
         }
       }
-      
+
       setCustomEmptyFolders((prev) => removeFolderAndDescendants(prev, folderPath));
-      
+
       const activeDeleted = requestsToDelete.some((r) => r.id === activeRequest?.id);
       if (activeDeleted) {
         setActiveRequest(null);
@@ -3108,10 +3391,10 @@ export default function App() {
   const handleSaveRequest = async () => {
     if (!activeRequest) return;
     const items = buildRequestItems(queryParams, headers, bodyFields, authType, authToken);
-    
+
     const oldParts = splitDisplayPath(activeRequest.name);
     const oldFolder = oldParts.slice(0, -1).join(' / ');
-    
+
     try {
       const saved = await invoke<RequestDto>('save_request', {
         payload: {
@@ -3126,13 +3409,13 @@ export default function App() {
           post_response_script: postResponseScript || null
         }
       });
-      
+
       const newParts = splitDisplayPath(requestName);
       const newFolder = newParts.slice(0, -1).join(' / ');
       if (newFolder) {
         setCustomEmptyFolders(prev => prev.filter(f => f !== newFolder));
       }
-      
+
       if (oldFolder && oldFolder !== newFolder && currentWorkspace) {
         const remainingInOldFolder = currentWorkspace.requests.filter((request) =>
           request.id !== activeRequest.id && requestBelongsToPath(request.name, oldFolder)
@@ -3141,7 +3424,7 @@ export default function App() {
           setCustomEmptyFolders((prev) => addEmptyFolderIfMissing(prev, oldFolder));
         }
       }
-      
+
       setWorkspaces((prev) => replaceWorkspaceRequest(prev, activeWorkspaceName, activeRequest, saved));
       setActiveRequest(saved);
     } catch (e) {
@@ -3177,7 +3460,7 @@ export default function App() {
     try {
       const resp = await invoke<ResponseDto>('send_request', { payload });
       setResponse(resp);
-      
+
       const dbReports = await invoke<ReportDto[]>('get_reports');
       setReports(dbReports);
     } catch (e) {
@@ -3367,7 +3650,7 @@ export default function App() {
           );
         })
       : [];
-    const filteredEmpty = searchQuery 
+    const filteredEmpty = searchQuery
       ? customEmptyFolders.filter(f => f.toLowerCase().includes(searchQuery.toLowerCase()))
       : customEmptyFolders;
     return buildRequestTree(filteredRequests, filteredEmpty);
@@ -3433,11 +3716,11 @@ export default function App() {
           aria-selected={false}
           role="treeitem"
           tabIndex={0}
-          style={{ 
-            display: 'flex', 
-            justifyContent: 'space-between', 
-            alignItems: 'center', 
-            paddingLeft: `${depth * 12 + 6}px`, 
+          style={{
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+            paddingLeft: `${depth * 12 + 6}px`,
             fontWeight: '600',
             height: '32px',
             backgroundColor: dragOverFolder === pathKey ? 'var(--accent-light)' : undefined,
@@ -3493,9 +3776,9 @@ export default function App() {
               ({totalReqs})
             </span>
           </button>
-          
+
           <div style={{ display: 'flex', gap: '4px', marginRight: '6px' }}>
-            <button 
+            <button
               type="button"
               className="icon-btn"
               onClick={(e) => {
@@ -3507,7 +3790,7 @@ export default function App() {
             >
               <Plus size={12} />
             </button>
-            <button 
+            <button
               type="button"
               className="icon-btn delete-btn-hover"
               onClick={(e) => {
@@ -3539,13 +3822,13 @@ export default function App() {
     const isActive = activeRequest?.id === req.id;
     const lastRun = latestReportByRequest.get(historyKey(req.method, req.url));
     return (
-      <div 
-        key={req.id || req.name} 
+      <div
+        key={req.id || req.name}
         className={`request-tree-item ${isActive ? 'active' : ''}`}
-        style={{ 
-          display: 'flex', 
-          justifyContent: 'space-between', 
-          alignItems: 'center', 
+        style={{
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'center',
           paddingLeft: `${depth * 12 + 18}px`,
           height: '32px',
           cursor: 'grab'
@@ -3577,9 +3860,9 @@ export default function App() {
               </span>
             </div>
           )}
-          <button 
+          <button
             type="button"
-            className="icon-btn delete-btn-hover" 
+            className="icon-btn delete-btn-hover"
             onClick={(e) => {
               e.stopPropagation();
               if (req.id) handleDeleteRequest(req.id, req.name);
@@ -3596,11 +3879,11 @@ export default function App() {
 
   const renderRequestTree = (nodes: RequestTreeNode[], depth: number = 0): ReactNode[] => {
     const elements: ReactNode[] = [];
-    
+
     for (const node of nodes) {
       const pathKey = node.path;
       const isExpanded = expandedRequestFolders[pathKey] !== false;
-      
+
       if (node.isFolder) {
         elements.push(renderRequestFolderNode(node, depth, isExpanded, pathKey));
       } else {
@@ -3610,7 +3893,7 @@ export default function App() {
         }
       }
     }
-    
+
     return elements;
   };
 
@@ -3625,13 +3908,13 @@ export default function App() {
   const renderSuiteFolderItem = (node: SuiteTreeNode, depth: number, isExpanded: boolean, totalCases: number, pathKey: string) => {
     const isSuiteActive = selectedSuitePath === node.path;
     return (
-      <div 
+      <div
         className={`request-tree-item ${isSuiteActive ? 'active' : ''}`}
-        style={{ 
-          display: 'flex', 
-          justifyContent: 'space-between', 
-          alignItems: 'center', 
-          paddingLeft: `${depth * 12 + 6}px`, 
+        style={{
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+          paddingLeft: `${depth * 12 + 6}px`,
           fontWeight: '600',
           height: '32px'
         }}
@@ -3656,9 +3939,9 @@ export default function App() {
             ({totalCases})
           </span>
         </button>
-        
+
         <div style={{ display: 'flex', gap: '2px' }}>
-          <button 
+          <button
             type="button"
             className="icon-btn"
             onClick={(e) => {
@@ -3669,7 +3952,7 @@ export default function App() {
           >
             {isExpanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
           </button>
-          <button 
+          <button
             type="button"
             className="icon-btn"
             onClick={(e) => {
@@ -3682,7 +3965,7 @@ export default function App() {
           >
             <Play size={12} fill="currentColor" style={{ color: 'var(--color-get)' }} />
           </button>
-          <button 
+          <button
             type="button"
             className="icon-btn"
             onClick={(e) => {
@@ -3727,9 +4010,9 @@ export default function App() {
           </span>
           <span className="request-name" style={{ fontSize: '12px' }} title={tc.name}>{tc.name}</span>
         </button>
-        <button 
+        <button
           type="button"
-          className="icon-btn delete-btn-hover" 
+          className="icon-btn delete-btn-hover"
           onClick={(e) => {
             e.stopPropagation();
             handleDeleteTestCase(tc.suite, tc.name);
@@ -3745,12 +4028,12 @@ export default function App() {
 
   const renderSuiteTree = (nodes: SuiteTreeNode[], depth: number = 0): ReactNode[] => {
     const elements: ReactNode[] = [];
-    
+
     for (const node of nodes) {
       const pathKey = node.path;
       const isExpanded = expandedFolders[pathKey] !== false;
       const hasChildren = node.children.length > 0;
-      
+
       const recursiveCases = getRecursiveCases(node);
       const totalCases = recursiveCases.length;
 
@@ -3768,7 +4051,7 @@ export default function App() {
         );
       }
     }
-    
+
     return elements;
   };
 
@@ -3776,7 +4059,7 @@ export default function App() {
     const isActive = selectedReport?.id === rep.id;
     const meta = reportMeta(rep);
     const methodLabel = meta.method || rep.module;
-    
+
     // Background color mapping
     let bgCol = 'rgba(16, 185, 129, 0.15)';
     if (meta.method) {
@@ -3804,18 +4087,18 @@ export default function App() {
     return (
       <button
         type="button"
-        key={rep.id} 
+        key={rep.id}
         className={`request-tree-item ${isActive ? 'active' : ''}`}
         onClick={() => setSelectedReport(rep)}
         style={{ flexDirection: 'column', alignItems: 'flex-start', gap: '4px', padding: '10px', width: '100%', background: 'none', border: 'none', color: 'inherit', textAlign: 'left' }}
       >
         <div style={{ display: 'flex', width: '100%', justifyContent: 'space-between', alignItems: 'center' }}>
-          <span 
-            className="method-tag" 
-            style={{ 
-              padding: '1px 4px', 
-              fontSize: '8px', 
-              minWidth: 'auto', 
+          <span
+            className="method-tag"
+            style={{
+              padding: '1px 4px',
+              fontSize: '8px',
+              minWidth: 'auto',
               backgroundColor: bgCol,
               color: textCol
             }}
@@ -3849,7 +4132,7 @@ export default function App() {
 
         <div className="workspace-select-wrapper">
           <span className="select-label">Workspace</span>
-          <select 
+          <select
             className="toolbar-select"
             value={activeWorkspaceName}
             onChange={(e) => {
@@ -3866,10 +4149,10 @@ export default function App() {
             ))}
             <option value="new">+ Create Workspace...</option>
           </select>
-          
+
           {activeWorkspaceName && (
-            <button 
-              className="icon-btn" 
+            <button
+              className="icon-btn"
               onClick={() => {
                 setNewWsRenameName(activeWorkspaceName);
                 setShowRenameWorkspace(true);
@@ -3884,7 +4167,7 @@ export default function App() {
 
         <div className="env-select-wrapper">
           <span className="select-label">Env</span>
-          <select 
+          <select
             className="toolbar-select"
             value={selectedEnv}
             onChange={(e) => setSelectedEnv(e.target.value)}
@@ -3898,19 +4181,19 @@ export default function App() {
       </div>
 
       <div className="toolbar-right">
-        <button 
-          className="btn btn-secondary" 
-          onClick={() => setShowImportDialog(true)} 
+        <button
+          className="btn btn-secondary"
+          onClick={() => setShowImportDialog(true)}
           style={{ padding: '6px 12px', fontSize: '13px', display: 'flex', alignItems: 'center', gap: '4px' }}
         >
           <span>Import</span>
         </button>
-        <button 
-          className="btn btn-secondary" 
+        <button
+          className="btn btn-secondary"
           onClick={() => {
             setExportFilePath(prev => prev || defaultExportFilename(activeWorkspaceName, exportFormat));
             setShowExportDialog(true);
-          }} 
+          }}
           style={{ padding: '6px 12px', fontSize: '13px', display: 'flex', alignItems: 'center', gap: '4px' }}
         >
           <span>Export</span>
@@ -4038,10 +4321,10 @@ export default function App() {
             {/* Preset Toolbar */}
             <div className="preset-toolbar" style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '10px 16px', borderBottom: '1px solid var(--border-color)', backgroundColor: 'var(--bg-secondary)', borderRadius: '8px 8px 0 0' }}>
               <span style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-secondary)' }}>Header Presets:</span>
-              <select 
-                value={selectedPreset} 
-                onChange={(e) => setSelectedPreset(e.target.value)} 
-                className="toolbar-select" 
+              <select
+                value={selectedPreset}
+                onChange={(e) => setSelectedPreset(e.target.value)}
+                className="toolbar-select"
                 style={{ minWidth: '150px', padding: '4px 8px', borderRadius: '4px', border: '1px solid var(--border-color)', backgroundColor: 'var(--bg-primary)', color: 'var(--text-primary)' }}
               >
                 <option value="">-- Select Preset --</option>
@@ -4068,10 +4351,10 @@ export default function App() {
                 ))}
               </datalist>
 
-              <div 
-                className="table-header" 
-                style={{ 
-                  display: 'grid', 
+              <div
+                className="table-header"
+                style={{
+                  display: 'grid',
                   gridTemplateColumns: '38px minmax(0, 1.2fr) minmax(0, 1.8fr) 48px 80px 32px',
                   gap: '10px',
                   alignItems: 'center',
@@ -4087,148 +4370,30 @@ export default function App() {
               </div>
 
               <div className="table-body">
-                {headers.map((h, idx) => {
-                  const rowWarnings = headerWarnings.filter(w => w.name && w.name.toLowerCase() === h.key.toLowerCase());
-                  const valueSuggestions =
-                    headerSuggestionMap.get(h.key.trim().toLowerCase())?.common_values ?? [];
-                  return (
-                    <div key={h.id} style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                      <div 
-                        className="table-row" 
-                        style={{ 
-                          display: 'grid', 
-                          gridTemplateColumns: '38px minmax(0, 1.2fr) minmax(0, 1.8fr) 48px 80px 32px',
-                          gap: '10px',
-                          alignItems: 'center',
-                          padding: '8px 12px'
-                        }}
-                      >
-                        {/* Enabled checkbox */}
-                        <div style={{ display: 'flex', justifyContent: 'center' }}>
-                          <input 
-                            type="checkbox" 
-                            checked={h.enabled} 
-                            onChange={(e) => updateHeader(idx, 'enabled', e.target.checked)} 
-                            style={{ cursor: 'pointer' }} 
-                          />
-                        </div>
-
-                        {/* Key Input with Autocomplete */}
-                        <input 
-                          type="text" 
-                          className="kv-input" 
-                          placeholder="key" 
-                          value={h.key} 
-                          onChange={(e) => updateHeader(idx, 'key', e.target.value)} 
-                          list="common-headers-list"
-                        />
-
-                        {/* Value Input with Autocomplete & Masking Toggle */}
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '4px', position: 'relative' }}>
-                          <input 
-                            type={h.secret && !visibleSecrets[h.id] ? "password" : "text"} 
-                            className="kv-input" 
-                            placeholder="value" 
-                            value={h.value} 
-                            onChange={(e) => updateHeader(idx, 'value', e.target.value)} 
-                            list={valueSuggestions.length > 0 ? `header-values-list-${h.id}` : undefined}
-                            style={{ flex: 1 }}
-                          />
-                          {valueSuggestions.length > 0 && (
-                            <datalist id={`header-values-list-${h.id}`}>
-                              {valueSuggestions.map(v => <option key={v} value={v} />)}
-                            </datalist>
-                          )}
-                        </div>
-
-                        {/* Secret Toggle */}
-                        <div style={{ display: 'flex', justifyContent: 'center' }}>
-                          <button 
-                            type="button" 
-                            className="icon-btn" 
-                            onClick={() => {
-                              const isSecret = !h.secret;
-                              updateHeader(idx, 'secret', isSecret);
-                              if (isSecret) {
-                                setVisibleSecrets(prev => ({ ...prev, [h.id]: false }));
-                              }
-                            }}
-                            title={h.secret ? "Mark as non-sensitive" : "Mark as sensitive/secret"}
-                            style={{ color: h.secret ? '#f59e0b' : 'var(--text-muted)', background: 'none', border: 'none', cursor: 'pointer' }}
-                          >
-                            {h.secret ? (
-                              <span 
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  toggleSecretVisibility(h.id);
-                                }}
-                              >
-                                {visibleSecrets[h.id] ? <EyeOff size={14} /> : <Eye size={14} />}
-                              </span>
-                            ) : (
-                              <Key size={14} />
-                            )}
-                          </button>
-                        </div>
-
-                        {/* Source Label */}
-                        <div style={{ display: 'flex', justifyContent: 'center' }}>
-                          <span 
-                            style={{ 
-                              fontSize: '9px', 
-                              fontWeight: 600, 
-                              padding: '2px 6px', 
-                              borderRadius: '4px',
-                              textTransform: 'uppercase',
-                              backgroundColor: h.source === 'Preset' ? 'rgba(59, 130, 246, 0.15)' :
-                                               h.source === 'Environment' ? 'rgba(16, 185, 129, 0.15)' :
-                                               h.source === 'Auto' ? 'rgba(107, 114, 128, 0.15)' :
-                                                                     'rgba(245, 158, 11, 0.15)',
-                              color: h.source === 'Preset' ? '#60a5fa' :
-                                     h.source === 'Environment' ? '#34d399' :
-                                     h.source === 'Auto' ? '#9ca3af' :
-                                                           '#fbbf24'
-                            }}
-                          >
-                            {h.source || 'User'}
-                          </span>
-                        </div>
-
-                        {/* Trash Icon */}
-                        <button className="icon-btn" onClick={() => deleteHeader(idx)}><Trash size={14} /></button>
-                      </div>
-
-                      {/* Warnings list for the current header row */}
-                      {rowWarnings.map((w, wIdx) => (
-                        <div 
-                          key={wIdx} 
-                          style={{ 
-                            fontSize: '11px', 
-                            color: w.severity === 'Error' ? '#ef4444' : '#f59e0b', 
-                            paddingLeft: '48px', 
-                            display: 'flex', 
-                            alignItems: 'center', 
-                            gap: '4px',
-                            marginBottom: '4px'
-                          }}
-                        >
-                          <AlertCircle size={12} />
-                          <span>{w.message}</span>
-                        </div>
-                      ))}
-                    </div>
-                  );
-                })}
+                {headers.map((headerRow, idx) => (
+                  <HeaderEditorRow
+                    key={headerRow.id}
+                    row={headerRow}
+                    index={idx}
+                    visible={Boolean(visibleSecrets[headerRow.id])}
+                    warnings={warningsForHeaderRow(headerRow.key)}
+                    valueSuggestions={valueSuggestionsForHeaderRow(headerRow.key)}
+                    onUpdate={updateHeader}
+                    onDelete={deleteHeader}
+                    onToggleSecretVisibility={toggleSecretVisibility}
+                    onSetHidden={hideSecretVisibility}
+                  />
+                ))}
               </div>
 
               {/* Resolved Headers Preview Panel */}
-              <div 
-                className="merged-headers-preview" 
-                style={{ 
-                  marginTop: '24px', 
-                  padding: '16px', 
-                  border: '1px solid var(--border-color)', 
-                  borderRadius: '8px', 
+              <div
+                className="merged-headers-preview"
+                style={{
+                  marginTop: '24px',
+                  padding: '16px',
+                  border: '1px solid var(--border-color)',
+                  borderRadius: '8px',
                   backgroundColor: 'var(--bg-secondary)'
                 }}
               >
@@ -4240,62 +4405,9 @@ export default function App() {
                 </div>
 
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                  {mergedHeaders.map((mh, idx) => {
-                    const isSensitive = ["authorization", "proxy-authorization", "x-api-key", "api-key", "cookie", "set-cookie", "x-auth-token", "x-csrf-token"].includes(mh.name.toLowerCase());
-                    let maskedValue = mh.value;
-                    if (isSensitive && mh.value) {
-                      const parts = mh.value.split(' ');
-                      if (parts.length > 1) {
-                        const scheme = parts[0];
-                        const rest = parts.slice(1).join(' ');
-                        maskedValue = `${scheme} ${rest.length <= 5 ? "****" : rest.slice(0, 5) + "...****"}`;
-                      } else {
-                        maskedValue = mh.value.length <= 5 ? "****" : mh.value.slice(0, 5) + "...****";
-                      }
-                    }
-
-                    return (
-                      <div 
-                        key={idx} 
-                        style={{ 
-                          display: 'flex', 
-                          justifyContent: 'space-between', 
-                          alignItems: 'center', 
-                          padding: '6px 8px', 
-                          backgroundColor: 'var(--bg-primary)', 
-                          borderRadius: '4px',
-                          fontSize: '12px'
-                        }}
-                      >
-                        <div style={{ display: 'flex', alignItems: 'center', gap:8, flex: 1, minWidth: 0 }}>
-                          <span style={{ fontWeight: 600, color: 'var(--text-secondary)', flexShrink: 0 }}>{mh.name}:</span>
-                          <span style={{ color: 'var(--text-muted)', fontFamily: 'monospace', textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap' }} title={mh.value}>
-                            {maskedValue}
-                          </span>
-                        </div>
-                        <span 
-                          style={{ 
-                            fontSize: '9px', 
-                            fontWeight: 600, 
-                            padding: '1px 4px', 
-                            borderRadius: '3px',
-                            textTransform: 'uppercase',
-                            marginLeft: '8px',
-                            backgroundColor: mh.source === 'Preset' ? 'rgba(59, 130, 246, 0.15)' :
-                                             mh.source === 'Environment' ? 'rgba(16, 185, 129, 0.15)' :
-                                             mh.source === 'Auto' ? 'rgba(107, 114, 128, 0.15)' :
-                                                                   'rgba(245, 158, 11, 0.15)',
-                            color: mh.source === 'Preset' ? '#60a5fa' :
-                                   mh.source === 'Environment' ? '#34d399' :
-                                   mh.source === 'Auto' ? '#9ca3af' :
-                                                         '#fbbf24'
-                          }}
-                        >
-                          {mh.source}
-                        </span>
-                      </div>
-                    );
-                  })}
+                  {mergedHeaders.map((header) => (
+                    <ResolvedHeaderPreviewRow key={mergedHeaderKey(header)} header={header} />
+                  ))}
 
                   {mergedHeaders.length === 0 && (
                     <div style={{ fontSize: '12px', color: 'var(--text-muted)', textAlign: 'center', padding: '12px' }}>
@@ -4305,10 +4417,10 @@ export default function App() {
                 </div>
 
                 {/* General/Global Warnings (not tied to specific header row keys) */}
-                {headerWarnings.filter(w => !w.name).map((w, wIdx) => (
-                  <div 
-                    key={wIdx} 
-                    style={{ 
+                {headerWarnings.filter(w => !w.name).map((w) => (
+                  <div
+                    key={headerWarningKey('global', w)}
+                    style={{
                       marginTop: '12px',
                       padding: '8px 12px',
                       borderRadius: '6px',
@@ -4562,8 +4674,8 @@ export default function App() {
       <section className="sidebar" style={{ width: `${sidebarWidth}px` }}>
         <div className="sidebar-header">
           <span className="sidebar-title">Test Suites</span>
-          <button 
-            className="icon-btn" 
+          <button
+            className="icon-btn"
             onClick={() => {
               setTestSuiteName("");
               setTestCaseName("");
@@ -4580,7 +4692,7 @@ export default function App() {
               setTcRequestUrl("");
               setTcRequestItems([]);
               setShowAddTestDialog(true);
-            }} 
+            }}
             title="Create Test Case"
           >
             <Plus size={16} />
@@ -4619,7 +4731,7 @@ export default function App() {
               <h2 style={{ fontSize: '20px', fontWeight: '700', marginBottom: '8px', color: 'var(--text-primary)' }}>Regression Testing Sweeps</h2>
               <p style={{ color: 'var(--text-secondary)', fontSize: '13px' }}>Run automated test assertion sweeps against your saved endpoints to validate reliability.</p>
             </div>
-            
+
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '16px' }}>
               <div style={{ padding: '16px', backgroundColor: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: '8px' }}>
                 <span style={{ fontSize: '11px', color: 'var(--text-muted)', textTransform: 'uppercase', fontWeight: '600' }}>Active Test Cases</span>
@@ -4772,7 +4884,7 @@ export default function App() {
   const renderReportsView = () => {
     const passedReports = reports.filter(r => isReportPassed(r));
     const failedReports = reports.filter(r => !isReportPassed(r));
-    
+
     return (
       <>
         <section className="sidebar" style={{ width: `${sidebarWidth}px` }}>
@@ -4803,11 +4915,11 @@ export default function App() {
                 <h2 style={{ fontSize: '20px', fontWeight: '700', marginBottom: '8px', color: 'var(--text-primary)' }}>System History Metrics</h2>
                 <p style={{ color: 'var(--text-secondary)', fontSize: '13px' }}>Audit log and performance reports generated from your workbench and test suite operations.</p>
               </div>
-              
-              <TestCasesDonutChart 
-                passed={passedReports.length} 
-                failed={failedReports.length} 
-                untested={0} 
+
+              <TestCasesDonutChart
+                passed={passedReports.length}
+                failed={failedReports.length}
+                untested={0}
               />
             </div>
           )}
@@ -4856,22 +4968,22 @@ export default function App() {
             <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
                 <label htmlFor="create-ws-name" style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>Name</label>
-                <input 
+                <input
                   id="create-ws-name"
-                  type="text" 
-                  className="kv-input" 
-                  value={newWsName} 
+                  type="text"
+                  className="kv-input"
+                  value={newWsName}
                   onChange={(e) => setNewWsName(e.target.value)}
                   placeholder="e.g. Project Alpha"
                 />
               </div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
                 <label htmlFor="create-ws-desc" style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>Description</label>
-                <input 
+                <input
                   id="create-ws-desc"
-                  type="text" 
-                  className="kv-input" 
-                  value={newWsDesc} 
+                  type="text"
+                  className="kv-input"
+                  value={newWsDesc}
                   onChange={(e) => setNewWsDesc(e.target.value)}
                   placeholder="API workbench for Project Alpha"
                 />
@@ -4892,11 +5004,11 @@ export default function App() {
             <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
                 <label htmlFor="rename-ws-name" style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>New Name</label>
-                <input 
+                <input
                   id="rename-ws-name"
-                  type="text" 
-                  className="kv-input" 
-                  value={newWsRenameName} 
+                  type="text"
+                  className="kv-input"
+                  value={newWsRenameName}
                   onChange={(e) => setNewWsRenameName(e.target.value)}
                   placeholder="e.g. Project Beta"
                 />
@@ -4919,22 +5031,22 @@ export default function App() {
             </h3>
 
             <div className="tabs-row" style={{ padding: 0, marginBottom: '12px', backgroundColor: 'transparent' }}>
-              <button 
-                className={`tab-btn ${settingsTab === 'general' ? 'active' : ''}`} 
+              <button
+                className={`tab-btn ${settingsTab === 'general' ? 'active' : ''}`}
                 onClick={() => setSettingsTab('general')}
                 style={{ padding: '8px 12px' }}
               >
                 General Info
               </button>
-              <button 
-                className={`tab-btn ${settingsTab === 'secrets' ? 'active' : ''}`} 
+              <button
+                className={`tab-btn ${settingsTab === 'secrets' ? 'active' : ''}`}
                 onClick={() => setSettingsTab('secrets')}
                 style={{ padding: '8px 12px' }}
               >
                 Secrets Manager
               </button>
             </div>
-            
+
             {settingsTab === 'general' && (
               <div style={{ display: 'flex', flexDirection: 'column', gap: '14px', fontSize: '13px', color: 'var(--text-secondary)', lineHeight: '1.6' }}>
                 <div style={{ display: 'flex', gap: '10px', alignItems: 'center', padding: '10px', backgroundColor: 'var(--bg-primary)', borderRadius: '6px', border: '1px solid var(--border-color)' }}>
@@ -4954,7 +5066,7 @@ export default function App() {
                 <div style={{ borderTop: '1px solid var(--border-color)', paddingTop: '12px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
                     <Heart size={14} style={{ color: 'red' }} fill="red" />
-                    <span>Version 0.1.5 (Tauri 2.0)</span>
+                    <span>Version 0.1.7 (Tauri 2.0)</span>
                   </div>
                   <span>ZapReq Core Engine</span>
                 </div>
@@ -4966,28 +5078,28 @@ export default function App() {
                 <p style={{ color: 'var(--text-secondary)', lineHeight: '1.5' }}>
                   Manage native secrets. Reference key names using double curly braces, e.g. <code>{"{{MY_API_KEY}}"}</code>. Values are loaded securely at runtime and never saved in workspaces.
                 </p>
-                
+
                 <div style={{ display: 'flex', gap: '8px', alignItems: 'flex-end', backgroundColor: 'var(--bg-primary)', padding: '10px', borderRadius: '6px', border: '1px solid var(--border-color)' }}>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', flex: 1 }}>
                     <label htmlFor="secret-key-input" style={{ fontSize: '11px', color: 'var(--text-muted)' }}>Key Name</label>
-                    <input 
+                    <input
                       id="secret-key-input"
-                      type="text" 
-                      placeholder="e.g. AWS_SECRET" 
-                      className="kv-input" 
-                      value={newSecretKey} 
+                      type="text"
+                      placeholder="e.g. AWS_SECRET"
+                      className="kv-input"
+                      value={newSecretKey}
                       onChange={(e) => setNewSecretKey(e.target.value.toUpperCase().replace(/[^A-Z0-9_]/g, ''))}
                       style={{ padding: '6px 10px' }}
                     />
                   </div>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', flex: 1.5 }}>
                     <label htmlFor="secret-val-input" style={{ fontSize: '11px', color: 'var(--text-muted)' }}>Secret Value</label>
-                    <input 
+                    <input
                       id="secret-val-input"
-                      type="password" 
-                      placeholder="value" 
-                      className="kv-input" 
-                      value={newSecretVal} 
+                      type="password"
+                      placeholder="value"
+                      className="kv-input"
+                      value={newSecretVal}
                       onChange={(e) => setNewSecretVal(e.target.value)}
                       style={{ padding: '6px 10px' }}
                     />
@@ -5033,22 +5145,22 @@ export default function App() {
             <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
                 <label htmlFor="import-ws-name" style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>New Workspace Name</label>
-                <input 
+                <input
                   id="import-ws-name"
-                  type="text" 
-                  className="kv-input" 
-                  value={importWsName} 
+                  type="text"
+                  className="kv-input"
+                  value={importWsName}
                   onChange={(e) => setImportWsName(e.target.value)}
                   placeholder="e.g. My Imported API"
                 />
               </div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
                 <label htmlFor="import-file-path" style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>Import JSON File</label>
-                <input 
+                <input
                   id="import-file-path"
-                  type="text" 
-                  className="kv-input" 
-                  value={importFilePath} 
+                  type="text"
+                  className="kv-input"
+                  value={importFilePath}
                   onChange={(e) => setImportFilePath(e.target.value)}
                   placeholder="e.g. /absolute/path/to/collection.json"
                 />
@@ -5070,10 +5182,10 @@ export default function App() {
             <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
                 <label htmlFor="export-format-select" style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>Format</label>
-                <select 
+                <select
                   id="export-format-select"
-                  className="toolbar-select" 
-                  value={exportFormat} 
+                  className="toolbar-select"
+                  value={exportFormat}
                   onChange={(e) => {
                     const nextFormat = e.target.value;
                     const currentDefault = defaultExportFilename(activeWorkspaceName, exportFormat);
@@ -5089,11 +5201,11 @@ export default function App() {
               </div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
                 <label htmlFor="export-file-path" style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>Destination File or Folder</label>
-                <input 
+                <input
                   id="export-file-path"
-                  type="text" 
-                  className="kv-input" 
-                  value={exportFilePath} 
+                  type="text"
+                  className="kv-input"
+                  value={exportFilePath}
                   onChange={(e) => setExportFilePath(e.target.value)}
                   placeholder={`e.g. /absolute/path/to/${defaultExportFilename(activeWorkspaceName, exportFormat)}`}
                 />
@@ -5219,15 +5331,15 @@ export default function App() {
               <ShieldCheck size={18} style={{ color: 'var(--accent-hover)' }} />
               <span>Create Regression Test Case</span>
             </h3>
-            
+
             <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
                 <label htmlFor="test-suite-name" style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>Suite Name</label>
-                <input 
+                <input
                   id="test-suite-name"
-                  type="text" 
-                  className="kv-input" 
-                  value={testSuiteName} 
+                  type="text"
+                  className="kv-input"
+                  value={testSuiteName}
                   onChange={(e) => setTestSuiteName(e.target.value)}
                   placeholder="e.g. Auth Sweep"
                 />
@@ -5262,10 +5374,10 @@ export default function App() {
                 <div style={{ display: 'flex', gap: '8px', alignItems: 'flex-end' }}>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', width: '90px' }}>
                     <label htmlFor="tc-method-select" style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>Method</label>
-                    <select 
+                    <select
                       id="tc-method-select"
-                      className="kv-input" 
-                      value={tcRequestMethod} 
+                      className="kv-input"
+                      value={tcRequestMethod}
                       onChange={(e) => setTcRequestMethod(e.target.value)}
                       style={{ minWidth: 'auto', width: '100%', cursor: 'pointer' }}
                     >
@@ -5278,40 +5390,40 @@ export default function App() {
                   </div>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', flex: 1 }}>
                     <label htmlFor="tc-url-input" style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>URL</label>
-                    <input 
+                    <input
                       id="tc-url-input"
-                      type="text" 
-                      className="kv-input" 
-                      value={tcRequestUrl} 
+                      type="text"
+                      className="kv-input"
+                      value={tcRequestUrl}
                       onChange={(e) => setTcRequestUrl(e.target.value)}
                       placeholder="https://api.example.com/endpoint"
                     />
                   </div>
                 </div>
               )}
-              
+
               <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
                 <label htmlFor="test-case-name" style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>Test Case Name</label>
-                <input 
+                <input
                   id="test-case-name"
-                  type="text" 
-                  className="kv-input" 
-                  value={testCaseName} 
+                  type="text"
+                  className="kv-input"
+                  value={testCaseName}
                   onChange={(e) => setTestCaseName(e.target.value)}
                   placeholder="e.g. Validate Valid Token"
                 />
               </div>
-              
+
               <div style={{ borderTop: '1px solid var(--border-color)', margin: '8px 0', paddingTop: '8px' }}>
                 <span style={{ fontSize: '11px', textTransform: 'uppercase', color: 'var(--text-muted)', fontWeight: '600', display: 'block', marginBottom: '8px' }}>Expectations (Assertions)</span>
-                
+
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px' }}>
                     <span style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>Expected Status Code</span>
-                    <input 
-                      type="text" 
-                      className="kv-input" 
-                      value={expectStatus} 
+                    <input
+                      type="text"
+                      className="kv-input"
+                      value={expectStatus}
                       onChange={(e) => setExpectStatus(e.target.value.replace(/\D/g, ''))}
                       placeholder="e.g. 200"
                       style={{ width: '80px', textAlign: 'center', padding: '4px' }}
@@ -5320,10 +5432,10 @@ export default function App() {
 
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px' }}>
                     <span style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>Max Response Time (ms)</span>
-                    <input 
-                      type="text" 
-                      className="kv-input" 
-                      value={expectMaxTime} 
+                    <input
+                      type="text"
+                      className="kv-input"
+                      value={expectMaxTime}
                       onChange={(e) => setExpectMaxTime(e.target.value.replace(/\D/g, ''))}
                       placeholder="e.g. 500"
                       style={{ width: '80px', textAlign: 'center', padding: '4px' }}
@@ -5332,10 +5444,10 @@ export default function App() {
 
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
                     <span style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>Response Contains Substring</span>
-                    <input 
-                      type="text" 
-                      className="kv-input" 
-                      value={expectContains} 
+                    <input
+                      type="text"
+                      className="kv-input"
+                      value={expectContains}
                       onChange={(e) => setExpectContains(e.target.value)}
                       placeholder="e.g. access_token"
                     />
@@ -5343,7 +5455,7 @@ export default function App() {
                 </div>
               </div>
             </div>
-            
+
             <div className="dialog-buttons" style={{ marginTop: '8px' }}>
               <button className="btn btn-secondary" onClick={() => setShowAddTestDialog(false)}>Cancel</button>
               <button className="btn btn-primary" onClick={handleSaveTestCase}>Create</button>
@@ -5360,18 +5472,18 @@ export default function App() {
 
       {/* Main Workspace Body */}
       <main className="workbench" ref={containerRef}>
-        
+
         {/* Far Left Activity Bar */}
         <nav className="activity-bar">
-          <button 
+          <button
             className={`activity-btn ${activeView === 'collections' ? 'active' : ''}`}
             onClick={() => setActiveView('collections')}
             title="Collections & Requests"
           >
             <Plus size={20} />
           </button>
-          
-          <button 
+
+          <button
             className={`activity-btn ${activeView === 'tests' ? 'active' : ''}`}
             onClick={() => setActiveView('tests')}
             title="Regression Tests Runner"
@@ -5379,7 +5491,7 @@ export default function App() {
             <ShieldCheck size={20} />
           </button>
 
-          <button 
+          <button
             className={`activity-btn ${activeView === 'reports' ? 'active' : ''}`}
             onClick={() => setActiveView('reports')}
             title="Execution History Reports"

@@ -67,95 +67,18 @@ fn run() -> Result<i32> {
     } = prepare_request_context(&mut args)?;
     let registry = AuthRegistry::with_defaults();
     warn_if_auth_incomplete(&args);
-    let auth_plugin = if let Some(credentials) = args.auth.as_deref() {
-        registry
-            .get(&args.auth_type)
-            .context("unsupported auth type requested")?;
-        Some(build_auth(&args.auth_type, credentials).context("failed to configure auth plugin")?)
-    } else {
-        None
-    };
-
-    let spec = RequestSpec {
-        method: args.method.clone(),
-        url: usable_url,
-        items: request_items.clone(),
-        headers: headers.clone(),
-    };
+    let auth_plugin = build_auth_plugin(&args, &registry)?;
+    let spec = build_request_spec(&args, usable_url, request_items.clone(), headers.clone());
 
     let engine = RequestEngine::new();
     let print_opts = build_print_opts(&args, &config);
 
     if let Some(code) =
-        maybe_run_offline_mode(&engine, &args, &spec, auth_plugin.as_deref(), &print_opts)?
+        maybe_run_preflight_mode(&engine, &args, &spec, auth_plugin.as_deref(), &print_opts)?
     {
         return Ok(code);
     }
-    if let Some(code) =
-        maybe_run_download_mode(&engine, &args, &spec, auth_plugin.as_deref(), &print_opts)?
-    {
-        return Ok(code);
-    }
-
-    let collected_items = zapreq::items::collect_from_parsed(&spec.items)?;
-    let body_type = if args.multipart || !collected_items.files.is_empty() {
-        "multipart"
-    } else if args.form {
-        "form"
-    } else if !collected_items.data_strings.is_empty() || !collected_items.data_json.is_empty() {
-        "json"
-    } else {
-        "none"
-    };
-
-    let body_content = if body_type == "json" {
-        let mut map = serde_json::Map::new();
-        for (k, v) in &collected_items.data_strings {
-            map.insert(k.clone(), serde_json::Value::String(v.clone()));
-        }
-        for (k, v) in &collected_items.data_json {
-            map.insert(k.clone(), v.clone());
-        }
-        if !map.is_empty() {
-            Some(serde_json::Value::Object(map).to_string())
-        } else {
-            None
-        }
-    } else {
-        None
-    };
-
-    let is_unencrypted = spec.url.starts_with("http://");
-    let warnings = zapreq::headers::validate_headers(
-        &spec.headers,
-        body_type,
-        body_content.as_deref(),
-        is_unencrypted,
-    );
-
-    let mut has_errors = false;
-    for w in &warnings {
-        use colored::Colorize;
-        let prefix = match w.severity {
-            zapreq::headers::HeaderValidationSeverity::Error => {
-                has_errors = true;
-                "error".red().bold()
-            }
-            zapreq::headers::HeaderValidationSeverity::Warning => "warning".yellow().bold(),
-            zapreq::headers::HeaderValidationSeverity::Info => "info".blue().bold(),
-        };
-        if let Some(ref name) = w.name {
-            eprintln!("{}: [{}] {}", prefix, name, w.message);
-        } else {
-            eprintln!("{}: {}", prefix, w.message);
-        }
-    }
-
-    if has_errors {
-        return Err(anyhow::anyhow!(
-            "Request cannot be safely built due to validation errors."
-        ));
-    }
+    validate_headers_for_request(&args, &spec)?;
 
     if let Some(code) = maybe_run_preview_mode(&args, &spec)? {
         return Ok(code);
@@ -203,10 +126,138 @@ struct PreparedRequestContext {
     loaded_session: LoadedSession,
 }
 
+struct ResolvedRequestParts {
+    url: String,
+    items: Vec<String>,
+}
+
 struct ExecutedRequest {
     trace: RequestTrace,
     response: ResponseData,
     elapsed_ms: u64,
+}
+
+fn build_auth_plugin(
+    args: &CliArgs,
+    registry: &AuthRegistry,
+) -> Result<Option<Box<dyn zapreq::auth::AuthPlugin>>> {
+    let Some(credentials) = args.auth.as_deref() else {
+        return Ok(None);
+    };
+
+    registry
+        .get(&args.auth_type)
+        .context("unsupported auth type requested")?;
+    let plugin =
+        build_auth(&args.auth_type, credentials).context("failed to configure auth plugin")?;
+    Ok(Some(plugin))
+}
+
+fn build_request_spec(
+    args: &CliArgs,
+    usable_url: String,
+    request_items: Vec<RequestItem>,
+    headers: Vec<zapreq::headers::Header>,
+) -> RequestSpec {
+    RequestSpec {
+        method: args.method.clone(),
+        url: usable_url,
+        items: request_items,
+        headers,
+    }
+}
+
+fn maybe_run_preflight_mode(
+    engine: &RequestEngine,
+    args: &CliArgs,
+    spec: &RequestSpec,
+    auth_plugin: Option<&dyn zapreq::auth::AuthPlugin>,
+    print_opts: &zapreq::output::PrintOpts,
+) -> Result<Option<i32>> {
+    if let Some(code) = maybe_run_offline_mode(engine, args, spec, auth_plugin, print_opts)? {
+        return Ok(Some(code));
+    }
+    maybe_run_download_mode(engine, args, spec, auth_plugin, print_opts)
+}
+
+fn validate_headers_for_request(args: &CliArgs, spec: &RequestSpec) -> Result<()> {
+    let (body_type, body_content) = request_body_validation_input(args, &spec.items)?;
+    let warnings = zapreq::headers::validate_headers(
+        &spec.headers,
+        body_type,
+        body_content.as_deref(),
+        spec.url.starts_with("http://"),
+    );
+    emit_header_warnings(&warnings)
+}
+
+fn request_body_validation_input(
+    args: &CliArgs,
+    items: &[RequestItem],
+) -> Result<(&'static str, Option<String>)> {
+    let collected_items = zapreq::items::collect_from_parsed(items)?;
+    let body_type = if args.multipart || !collected_items.files.is_empty() {
+        "multipart"
+    } else if args.form {
+        "form"
+    } else if !collected_items.data_strings.is_empty() || !collected_items.data_json.is_empty() {
+        "json"
+    } else {
+        "none"
+    };
+    let body_content = build_json_body_preview(body_type, &collected_items);
+    Ok((body_type, body_content))
+}
+
+fn build_json_body_preview(
+    body_type: &str,
+    collected_items: &zapreq::items::CollectedItems,
+) -> Option<String> {
+    if body_type != "json" {
+        return None;
+    }
+
+    let mut map = serde_json::Map::new();
+    for (key, value) in &collected_items.data_strings {
+        map.insert(key.clone(), serde_json::Value::String(value.clone()));
+    }
+    for (key, value) in &collected_items.data_json {
+        map.insert(key.clone(), value.clone());
+    }
+
+    if map.is_empty() {
+        None
+    } else {
+        Some(serde_json::Value::Object(map).to_string())
+    }
+}
+
+fn emit_header_warnings(warnings: &[zapreq::headers::HeaderWarning]) -> Result<()> {
+    let mut has_errors = false;
+
+    for warning in warnings {
+        let prefix = match warning.severity {
+            zapreq::headers::HeaderValidationSeverity::Error => {
+                has_errors = true;
+                "error".red().bold()
+            }
+            zapreq::headers::HeaderValidationSeverity::Warning => "warning".yellow().bold(),
+            zapreq::headers::HeaderValidationSeverity::Info => "info".blue().bold(),
+        };
+        if let Some(name) = warning.name.as_deref() {
+            eprintln!("{}: [{}] {}", prefix, name, warning.message);
+        } else {
+            eprintln!("{}: {}", prefix, warning.message);
+        }
+    }
+
+    if has_errors {
+        return Err(anyhow!(
+            "Request cannot be safely built due to validation errors."
+        ));
+    }
+
+    Ok(())
 }
 
 fn prepare_run_args(config: &zapreq::config::Config) -> Result<PreparedRun> {
@@ -281,26 +332,14 @@ fn prepare_request_context(args: &mut CliArgs) -> Result<PreparedRequestContext>
 }
 
 fn resolve_request_url(args: &CliArgs) -> Result<String> {
-    let mut resolved = CliResolved {
-        url: args.url.clone(),
-        request_items: args.request_items.clone(),
-        profile_headers: HashMap::new(),
-        variables: load_env_variables(args)?,
-    };
-
-    if let Some(profile_name) = args.env_profile.as_deref() {
-        let profile = load_profile(profile_name)
-            .with_context(|| format!("failed to load env profile: {profile_name}"))?;
-        apply_profile(&profile, &mut resolved);
-    }
-
-    let resolved_url = substitute_placeholders(&resolved.url, &resolved.variables);
-    let resolved_items = collect_resolved_items(&resolved);
-    validate_unresolved_values(&resolved_url, &resolved_items)?;
-    Ok(resolved_url)
+    Ok(resolve_request_parts(args)?.url)
 }
 
 fn resolve_request_items(args: &CliArgs) -> Result<Vec<String>> {
+    Ok(resolve_request_parts(args)?.items)
+}
+
+fn resolve_request_parts(args: &CliArgs) -> Result<ResolvedRequestParts> {
     let mut resolved = CliResolved {
         url: args.url.clone(),
         request_items: args.request_items.clone(),
@@ -317,7 +356,10 @@ fn resolve_request_items(args: &CliArgs) -> Result<Vec<String>> {
     let resolved_url = substitute_placeholders(&resolved.url, &resolved.variables);
     let resolved_items = collect_resolved_items(&resolved);
     validate_unresolved_values(&resolved_url, &resolved_items)?;
-    Ok(resolved_items)
+    Ok(ResolvedRequestParts {
+        url: resolved_url,
+        items: resolved_items,
+    })
 }
 
 fn load_env_variables(args: &CliArgs) -> Result<HashMap<String, String>> {
@@ -1647,15 +1689,16 @@ fn maybe_run_preview_mode(args: &CliArgs, spec: &RequestSpec) -> Result<Option<i
 #[cfg(test)]
 mod tests {
     use super::{
-        append_resume_range_header, collect_resolved_items, final_status_code, infer_ssl_label,
-        is_raw_subcommand_invocation, load_env_file, maybe_render_test_report, parse_cli_from,
-        resolve_request_items, resolve_request_url, should_launch_default_gui,
-        substitute_item_value, validate_unresolved_values,
+        append_resume_range_header, build_json_body_preview, collect_resolved_items,
+        final_status_code, infer_ssl_label, is_raw_subcommand_invocation, load_env_file,
+        maybe_render_test_report, parse_cli_from, resolve_request_items, resolve_request_url,
+        should_launch_default_gui, substitute_item_value, validate_unresolved_values,
     };
     use std::collections::HashMap;
     use std::fs;
     use tempfile::tempdir;
     use zapreq::config::CliResolved;
+    use zapreq::items::CollectedItems;
     use zapreq::response::{RequestTrace, ResponseData};
     use zapreq::testing::TestOptions;
 
@@ -1762,6 +1805,27 @@ mod tests {
 
         assert_eq!(items[0], "q==abc123");
         assert!(items.contains(&"Authorization:Bearer abc123".to_string()));
+    }
+
+    #[test]
+    fn build_json_body_preview_serializes_string_and_json_fields() {
+        let mut collected = CollectedItems::default();
+        collected
+            .data_strings
+            .push(("name".to_string(), "alice".to_string()));
+        collected
+            .data_json
+            .push(("meta".to_string(), serde_json::json!({ "role": "admin" })));
+
+        let preview =
+            build_json_body_preview("json", &collected).expect("preview should be generated");
+
+        let preview_json: serde_json::Value =
+            serde_json::from_str(&preview).expect("preview should be valid json");
+        assert_eq!(
+            preview_json,
+            serde_json::json!({ "name": "alice", "meta": { "role": "admin" } })
+        );
     }
 
     #[test]

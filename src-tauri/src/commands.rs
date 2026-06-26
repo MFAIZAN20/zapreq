@@ -402,7 +402,7 @@ fn save_workspace_request_helper(ws: &mut Workspace, payload: &SaveRequestPayloa
 pub fn save_request(payload: SaveRequestPayload) -> Result<RequestDto, String> {
     try_command(|| {
         let cli = cli_from_parts(&payload.method, &payload.url, &payload.items)?;
-        
+
         let final_id = if let Some(workspace_name) = payload.workspace.as_deref().filter(|value| !value.is_empty()) {
             let mut ws = if list_workspaces()?.iter().any(|ws| ws.name == workspace_name) {
                 load_workspace(workspace_name)?
@@ -1449,10 +1449,10 @@ pub fn save_test_case(payload: AddTestCasePayload) -> Result<(), String> {
         if suite.is_empty() || name.is_empty() {
             return Err(anyhow!("Suite and name cannot be empty"));
         }
-        
+
         let conn = open_connection()?;
         let now = chrono::Utc::now().to_rfc3339();
-        
+
         conn.execute(
             "INSERT INTO test_cases (
                 suite, name, source_label, method, url, items_json, headers_json,
@@ -1547,7 +1547,7 @@ pub fn get_merged_headers(
             env_profile.as_deref(),
             None,
         )?;
-        
+
         let parsed_items = parse_request_items(&resolved.items)?;
         resolve_final_headers_for_runtime(
             &method,

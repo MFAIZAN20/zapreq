@@ -1,3 +1,8 @@
+## [0.1.7] - 2026-06-27
+
+### Changed
+- Finalized the `v0.1.7` release metadata after fixing header editor maintainability issues and extending header validation test coverage.
+
 ## [0.1.5] - 2026-06-19
 
 ### Changed

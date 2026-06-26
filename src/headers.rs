@@ -420,10 +420,7 @@ pub fn validate_headers(
 ) -> Vec<HeaderWarning> {
     let mut warnings = Vec::new();
     let mut counts: HashMap<String, usize> = HashMap::new();
-
-    // RFC 7230 token character check
-    let token_re =
-        Regex::new(r"^[A-Za-z0-9!#\$%&'\*\+\-\.\^_`\|~]+$").expect("regex should compile");
+    let token_re = header_name_token_regex();
 
     for h in headers {
         if !h.enabled {
@@ -434,131 +431,178 @@ pub fn validate_headers(
         let key = name_trimmed.to_ascii_lowercase();
         *counts.entry(key.clone()).or_insert(0) += 1;
 
-        // Empty header name
         if name_trimmed.is_empty() {
-            warnings.push(HeaderWarning {
-                name: Some(h.name.clone()),
-                message: "Header name cannot be empty.".to_string(),
-                severity: HeaderValidationSeverity::Error,
-            });
+            push_header_warning(
+                &mut warnings,
+                Some(h.name.clone()),
+                "Header name cannot be empty.".to_string(),
+                HeaderValidationSeverity::Error,
+            );
             continue;
         }
 
-        // Invalid characters in name
         if !token_re.is_match(name_trimmed) {
-            warnings.push(HeaderWarning {
-                name: Some(h.name.clone()),
-                message: format!(
+            push_header_warning(
+                &mut warnings,
+                Some(h.name.clone()),
+                format!(
                     "Header name '{}' contains invalid characters.",
                     name_trimmed
                 ),
-                severity: HeaderValidationSeverity::Error,
-            });
+                HeaderValidationSeverity::Error,
+            );
         }
 
-        // Empty value check (unless allowed)
         if h.value.trim().is_empty() {
-            warnings.push(HeaderWarning {
-                name: Some(h.name.clone()),
-                message: format!("Header '{}' is defined without a value.", h.name),
-                severity: HeaderValidationSeverity::Warning,
-            });
+            push_header_warning(
+                &mut warnings,
+                Some(h.name.clone()),
+                format!("Header '{}' is defined without a value.", h.name),
+                HeaderValidationSeverity::Warning,
+            );
         }
 
-        // Typo suggestions
-        match key.as_str() {
-            "contenttype" => warnings.push(HeaderWarning {
-                name: Some(h.name.clone()),
-                message: "Did you mean 'Content-Type'?".to_string(),
-                severity: HeaderValidationSeverity::Warning,
-            }),
-            "authorisation" | "authentication" => warnings.push(HeaderWarning {
-                name: Some(h.name.clone()),
-                message: "Did you mean 'Authorization'?".to_string(),
-                severity: HeaderValidationSeverity::Warning,
-            }),
-            "content-length" => warnings.push(HeaderWarning {
-                name: Some(h.name.clone()),
-                message: "Manually setting Content-Length is not recommended; let the HTTP client handle it.".to_string(),
-                severity: HeaderValidationSeverity::Warning,
-            }),
-            _ => {}
-        }
-
-        // Unencrypted HTTP warning for sensitive secrets
-        if is_unencrypted && is_sensitive_header(&h.name) {
-            warnings.push(HeaderWarning {
-                name: Some(h.name.clone()),
-                message: format!(
-                    "Sensitive header '{}' is being sent over unencrypted HTTP.",
-                    h.name
-                ),
-                severity: HeaderValidationSeverity::Warning,
-            });
-        }
+        push_typo_warning(&mut warnings, h, &key);
+        push_sensitive_transport_warning(&mut warnings, h, is_unencrypted);
     }
 
-    // Duplicate warnings
-    for (key, count) in &counts {
-        if *count > 1 {
-            let orig_name = headers
-                .iter()
-                .find(|h| h.name.to_ascii_lowercase() == *key)
-                .map(|h| h.name.as_str())
-                .unwrap_or(key);
-            match key.as_str() {
-                "authorization" | "content-type" | "host" | "content-length" => {
-                    warnings.push(HeaderWarning {
-                        name: Some(orig_name.to_string()),
-                        message: format!("Problematic duplicate header '{}' detected.", orig_name),
-                        severity: HeaderValidationSeverity::Warning,
-                    });
-                }
-                _ => {
-                    warnings.push(HeaderWarning {
-                        name: Some(orig_name.to_string()),
-                        message: format!("Duplicate header '{}' detected.", orig_name),
-                        severity: HeaderValidationSeverity::Info,
-                    });
-                }
-            }
-        }
-    }
-
-    // JSON body check
-    let has_json_ct = headers.iter().any(|h| {
-        h.enabled
-            && h.name.eq_ignore_ascii_case("content-type")
-            && h.value.to_ascii_lowercase().contains("application/json")
-    });
-
-    if body_type == "json" && !has_json_ct {
-        warnings.push(HeaderWarning {
-            name: None,
-            message:
-                "JSON body fields are present but Content-Type is not set to application/json."
-                    .to_string(),
-            severity: HeaderValidationSeverity::Warning,
-        });
-    }
-
-    if has_json_ct {
-        if let Some(body) = body_content {
-            let body_trimmed = body.trim();
-            if !body_trimmed.is_empty()
-                && serde_json::from_str::<serde_json::Value>(body_trimmed).is_err()
-            {
-                warnings.push(HeaderWarning {
-                    name: Some("Content-Type".to_string()),
-                    message: "Content-Type is application/json but body content is not valid JSON."
-                        .to_string(),
-                    severity: HeaderValidationSeverity::Error,
-                });
-            }
-        }
-    }
+    push_duplicate_warnings(&mut warnings, headers, &counts);
+    push_json_body_warnings(&mut warnings, headers, body_type, body_content);
 
     warnings
+}
+
+fn header_name_token_regex() -> Regex {
+    Regex::new(r"^[A-Za-z0-9!#\$%&'\*\+\-\.\^_`\|~]+$").expect("regex should compile")
+}
+
+fn push_header_warning(
+    warnings: &mut Vec<HeaderWarning>,
+    name: Option<String>,
+    message: String,
+    severity: HeaderValidationSeverity,
+) {
+    warnings.push(HeaderWarning {
+        name,
+        message,
+        severity,
+    });
+}
+
+fn push_typo_warning(warnings: &mut Vec<HeaderWarning>, header: &Header, key: &str) {
+    let message = match key {
+        "contenttype" => Some("Did you mean 'Content-Type'?"),
+        "authorisation" | "authentication" => Some("Did you mean 'Authorization'?"),
+        "content-length" => Some(
+            "Manually setting Content-Length is not recommended; let the HTTP client handle it.",
+        ),
+        _ => None,
+    };
+    if let Some(message) = message {
+        push_header_warning(
+            warnings,
+            Some(header.name.clone()),
+            message.to_string(),
+            HeaderValidationSeverity::Warning,
+        );
+    }
+}
+
+fn push_sensitive_transport_warning(
+    warnings: &mut Vec<HeaderWarning>,
+    header: &Header,
+    is_unencrypted: bool,
+) {
+    if !is_unencrypted || !is_sensitive_header(&header.name) {
+        return;
+    }
+
+    push_header_warning(
+        warnings,
+        Some(header.name.clone()),
+        format!(
+            "Sensitive header '{}' is being sent over unencrypted HTTP.",
+            header.name
+        ),
+        HeaderValidationSeverity::Warning,
+    );
+}
+
+fn push_duplicate_warnings(
+    warnings: &mut Vec<HeaderWarning>,
+    headers: &[Header],
+    counts: &HashMap<String, usize>,
+) {
+    for (key, count) in counts {
+        if *count <= 1 {
+            continue;
+        }
+
+        let original_name = headers
+            .iter()
+            .find(|header| header.name.to_ascii_lowercase() == *key)
+            .map(|header| header.name.as_str())
+            .unwrap_or(key);
+        let (message, severity) = duplicate_warning_details(key, original_name);
+        push_header_warning(warnings, Some(original_name.to_string()), message, severity);
+    }
+}
+
+fn duplicate_warning_details(key: &str, original_name: &str) -> (String, HeaderValidationSeverity) {
+    match key {
+        "authorization" | "content-type" | "host" | "content-length" => (
+            format!("Problematic duplicate header '{}' detected.", original_name),
+            HeaderValidationSeverity::Warning,
+        ),
+        _ => (
+            format!("Duplicate header '{}' detected.", original_name),
+            HeaderValidationSeverity::Info,
+        ),
+    }
+}
+
+fn push_json_body_warnings(
+    warnings: &mut Vec<HeaderWarning>,
+    headers: &[Header],
+    body_type: &str,
+    body_content: Option<&str>,
+) {
+    let has_json_content_type = headers.iter().any(|header| {
+        header.enabled
+            && header.name.eq_ignore_ascii_case("content-type")
+            && header
+                .value
+                .to_ascii_lowercase()
+                .contains("application/json")
+    });
+
+    if body_type == "json" && !has_json_content_type {
+        push_header_warning(
+            warnings,
+            None,
+            "JSON body fields are present but Content-Type is not set to application/json."
+                .to_string(),
+            HeaderValidationSeverity::Warning,
+        );
+    }
+
+    let Some(body) = body_content else {
+        return;
+    };
+    let body_trimmed = body.trim();
+    if !has_json_content_type || body_trimmed.is_empty() {
+        return;
+    }
+    if serde_json::from_str::<serde_json::Value>(body_trimmed).is_ok() {
+        return;
+    }
+
+    push_header_warning(
+        warnings,
+        Some("Content-Type".to_string()),
+        "Content-Type is application/json but body content is not valid JSON.".to_string(),
+        HeaderValidationSeverity::Error,
+    );
 }
 
 /// Builds request headers using the full CLI defaults, curl headers, presets, profile, and body content.
@@ -737,6 +781,76 @@ mod tests {
         assert!(warnings.iter().any(|w| w
             .message
             .contains("Sensitive header 'Authorization' is being sent over unencrypted HTTP.")));
+    }
+
+    #[test]
+    fn test_validate_headers_warns_when_json_body_lacks_content_type() {
+        let headers = vec![Header {
+            name: "Accept".to_string(),
+            value: "application/json".to_string(),
+            enabled: true,
+            sensitive: false,
+            source: HeaderSource::User,
+        }];
+
+        let warnings = validate_headers(&headers, "json", Some(r#"{"ok":true}"#), false);
+
+        assert!(warnings.iter().any(|warning| {
+            warning.name.is_none()
+                && warning.severity == HeaderValidationSeverity::Warning
+                && warning
+                    .message
+                    .contains("Content-Type is not set to application/json")
+        }));
+    }
+
+    #[test]
+    fn test_validate_headers_errors_on_invalid_json_body() {
+        let headers = vec![Header {
+            name: "Content-Type".to_string(),
+            value: "application/json".to_string(),
+            enabled: true,
+            sensitive: false,
+            source: HeaderSource::User,
+        }];
+
+        let warnings = validate_headers(&headers, "json", Some("{not-json}"), false);
+
+        assert!(warnings.iter().any(|warning| {
+            warning.name.as_deref() == Some("Content-Type")
+                && warning.severity == HeaderValidationSeverity::Error
+                && warning
+                    .message
+                    .contains("body content is not valid JSON")
+        }));
+    }
+
+    #[test]
+    fn test_validate_headers_uses_info_for_noncritical_duplicates() {
+        let headers = vec![
+            Header {
+                name: "X-Trace".to_string(),
+                value: "one".to_string(),
+                enabled: true,
+                sensitive: false,
+                source: HeaderSource::User,
+            },
+            Header {
+                name: "X-Trace".to_string(),
+                value: "two".to_string(),
+                enabled: true,
+                sensitive: false,
+                source: HeaderSource::User,
+            },
+        ];
+
+        let warnings = validate_headers(&headers, "none", None, false);
+
+        assert!(warnings.iter().any(|warning| {
+            warning.name.as_deref() == Some("X-Trace")
+                && warning.severity == HeaderValidationSeverity::Info
+                && warning.message.contains("Duplicate header 'X-Trace' detected.")
+        }));
     }
 
     #[test]
