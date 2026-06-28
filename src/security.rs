@@ -772,102 +772,94 @@ fn run_xss_probes(
     )
 }
 
+const BOLA_CHECK_NAME: &str = "BOLA Probe";
+
+fn bola_summary(
+    record: &RequestRecord,
+    status: &str,
+    attempts: u32,
+    findings: usize,
+    note: impl Into<String>,
+) -> SecurityCheckSummary {
+    SecurityCheckSummary {
+        name: BOLA_CHECK_NAME.to_string(),
+        target: record.source_label.clone(),
+        status: status.to_string(),
+        attempts,
+        findings,
+        note: note.into(),
+    }
+}
+
+fn bola_skip(
+    record: &RequestRecord,
+    note: impl Into<String>,
+) -> (Vec<SecurityFinding>, SecurityCheckSummary) {
+    (Vec::new(), bola_summary(record, "skipped", 0, 0, note))
+}
+
+fn bola_failure(
+    record: &RequestRecord,
+    attempts: u32,
+    note: impl Into<String>,
+    spec: FindingSpec<'_>,
+) -> (Vec<SecurityFinding>, SecurityCheckSummary) {
+    (
+        vec![finding(record, spec)],
+        bola_summary(record, "error", attempts, 1, note),
+    )
+}
+
 fn run_bola_probe(
     record: &RequestRecord,
     options: &SecurityScanOptions,
     config: &Config,
 ) -> (Vec<SecurityFinding>, SecurityCheckSummary) {
     let Some(profile_a) = options.bola_session_a_profile.as_deref() else {
-        return (
-            Vec::new(),
-            SecurityCheckSummary {
-                name: "BOLA Probe".to_string(),
-                target: record.source_label.clone(),
-                status: "skipped".to_string(),
-                attempts: 0,
-                findings: 0,
-                note: "Session A environment profile was not configured.".to_string(),
-            },
-        );
+        return bola_skip(record, "Session A environment profile was not configured.");
     };
     let Some(profile_b) = options.bola_session_b_profile.as_deref() else {
-        return (
-            Vec::new(),
-            SecurityCheckSummary {
-                name: "BOLA Probe".to_string(),
-                target: record.source_label.clone(),
-                status: "skipped".to_string(),
-                attempts: 0,
-                findings: 0,
-                note: "Session B environment profile was not configured.".to_string(),
-            },
-        );
+        return bola_skip(record, "Session B environment profile was not configured.");
     };
     if !has_object_identifier(&record.url) {
-        return (
-            Vec::new(),
-            SecurityCheckSummary {
-                name: "BOLA Probe".to_string(),
-                target: record.source_label.clone(),
-                status: "skipped".to_string(),
-                attempts: 0,
-                findings: 0,
-                note: "Request path does not look identifier-based.".to_string(),
-            },
-        );
+        return bola_skip(record, "Request path does not look identifier-based.");
     }
 
     let resolved_a = match resolve_record_runtime(record, Some(profile_a), config) {
         Ok(record) => record,
         Err(err) => {
-            return (
-                vec![finding(
-                    record,
-                    finding_spec!(
-                        "low",
-                        "bola",
-                        "BOLA test skipped",
-                        "Session A could not be resolved for an authorization comparison.",
-                        "Verify the environment profile and retry the BOLA test.",
-                        21,
-                        err.to_string(),
-                    ),
-                )],
-                SecurityCheckSummary {
-                    name: "BOLA Probe".to_string(),
-                    target: record.source_label.clone(),
-                    status: "error".to_string(),
-                    attempts: 0,
-                    findings: 1,
-                    note: format!("Failed to resolve Session A profile '{profile_a}'."),
-                },
+            return bola_failure(
+                record,
+                0,
+                format!("Failed to resolve Session A profile '{profile_a}'."),
+                finding_spec!(
+                    "low",
+                    "bola",
+                    "BOLA test skipped",
+                    "Session A could not be resolved for an authorization comparison.",
+                    "Verify the environment profile and retry the BOLA test.",
+                    21,
+                    err.to_string(),
+                ),
             );
         }
     };
     let resolved_b = match resolve_record_runtime(record, Some(profile_b), config) {
         Ok(record) => record,
         Err(err) => {
-            return (
-                vec![finding(
-                    record,
-                    finding_spec!(
-                        "low",
-                        "bola",
-                        "BOLA test skipped",
-                        "Session B could not be resolved for an authorization comparison.",
-                        "Verify the environment profile and retry the BOLA test.",
-                        21,
-                        err.to_string(),
-                    ),
-                )],
-                SecurityCheckSummary {
-                    name: "BOLA Probe".to_string(),
-                    target: record.source_label.clone(),
-                    status: "error".to_string(),
-                    attempts: 0,
-                    findings: 1,
-                    note: format!("Failed to resolve Session B profile '{profile_b}'."),
-                },
+            return bola_failure(
+                record,
+                0,
+                format!("Failed to resolve Session B profile '{profile_b}'."),
+                finding_spec!(
+                    "low",
+                    "bola",
+                    "BOLA test skipped",
+                    "Session B could not be resolved for an authorization comparison.",
+                    "Verify the environment profile and retry the BOLA test.",
+                    21,
+                    err.to_string(),
+                ),
             );
         }
     };
@@ -875,54 +867,38 @@ fn run_bola_probe(
     let session_a = match execute_record(&resolved_a, config) {
         Ok((_trace, response, elapsed_ms)) => ObservedResponse::from_response(response, elapsed_ms),
         Err(err) => {
-            return (
-                vec![finding(
-                    record,
-                    finding_spec!(
-                        "low",
-                        "bola",
-                        "BOLA test skipped",
-                        "The Session A baseline request did not succeed, so ownership comparison could not start.",
-                        "Verify the Session A profile can access the resource before running BOLA tests.",
-                        24,
-                        err.to_string(),
-                    ),
-                )],
-                SecurityCheckSummary {
-                    name: "BOLA Probe".to_string(),
-                    target: record.source_label.clone(),
-                    status: "error".to_string(),
-                    attempts: 1,
-                    findings: 1,
-                    note: "Session A baseline request failed.".to_string(),
-                },
+            return bola_failure(
+                record,
+                1,
+                "Session A baseline request failed.",
+                finding_spec!(
+                    "low",
+                    "bola",
+                    "BOLA test skipped",
+                    "The Session A baseline request did not succeed, so ownership comparison could not start.",
+                    "Verify the Session A profile can access the resource before running BOLA tests.",
+                    24,
+                    err.to_string(),
+                ),
             );
         }
     };
     let session_b = match execute_record(&resolved_b, config) {
         Ok((_trace, response, elapsed_ms)) => ObservedResponse::from_response(response, elapsed_ms),
         Err(err) => {
-            return (
-                vec![finding(
-                    record,
-                    finding_spec!(
-                        "low",
-                        "bola",
-                        "BOLA test skipped",
-                        "The Session B baseline request did not complete, so the authorization check is inconclusive.",
-                        "Verify the Session B profile and endpoint reachability before retrying.",
-                        24,
-                        err.to_string(),
-                    ),
-                )],
-                SecurityCheckSummary {
-                    name: "BOLA Probe".to_string(),
-                    target: record.source_label.clone(),
-                    status: "error".to_string(),
-                    attempts: 2,
-                    findings: 1,
-                    note: "Session B comparison request failed.".to_string(),
-                },
+            return bola_failure(
+                record,
+                2,
+                "Session B comparison request failed.",
+                finding_spec!(
+                    "low",
+                    "bola",
+                    "BOLA test skipped",
+                    "The Session B baseline request did not complete, so the authorization check is inconclusive.",
+                    "Verify the Session B profile and endpoint reachability before retrying.",
+                    24,
+                    err.to_string(),
+                ),
             );
         }
     };
@@ -955,17 +931,16 @@ fn run_bola_probe(
 
     (
         findings.clone(),
-        SecurityCheckSummary {
-            name: "BOLA Probe".to_string(),
-            target: record.source_label.clone(),
-            status: "completed".to_string(),
-            attempts: 2,
-            findings: findings.len(),
-            note: format!(
+        bola_summary(
+            record,
+            "completed",
+            2,
+            findings.len(),
+            format!(
                 "Session A status={}, Session B status={}",
                 session_a.status, session_b.status
             ),
-        },
+        ),
     )
 }
 
