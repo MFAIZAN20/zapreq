@@ -154,6 +154,10 @@ pub fn record_http_report(
 ) -> Result<()> {
     let conn = open_connection()?;
     let summary = format!("{method} {url} -> {status} {reason} ({elapsed_ms} ms)");
+    let masked_headers: Vec<(String, String)> = headers
+        .iter()
+        .map(|(k, v)| (k.clone(), crate::headers::mask_header_value(k, v)))
+        .collect();
     let payload = serde_json::json!({
         "method": method,
         "url": url,
@@ -163,7 +167,7 @@ pub fn record_http_report(
         "elapsed_ms": elapsed_ms,
         "size_bytes": size_bytes,
         "content_type": content_type,
-        "headers": headers,
+        "headers": masked_headers,
         "body": body,
     });
     let payload_json = serde_json::to_string_pretty(&payload)?;

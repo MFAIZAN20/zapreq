@@ -1,7 +1,5 @@
 use anyhow::{anyhow, Context, Result};
 use colored::Colorize;
-use regex::Regex;
-use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::time::Instant;
 
@@ -9,8 +7,8 @@ use zapreq::ai::ai_assist;
 use zapreq::auth::{build_auth, AuthRegistry};
 use zapreq::cli::{
     is_known_subcommand_name, parse_cli_from, CliArgs, CollectionsCommand, Command, DocsCommand,
-    EnvCommand, NotesCommand, PerfCommand, PluginCommand, RegressionCommand, RequestsCommand,
-    SecretCommand, SecurityCommand,
+    EnvCommand, NotesCommand, PerfCommand, PluginCommand, PresetCommand, RegressionCommand,
+    RequestsCommand, SecretCommand, SecurityCommand,
 };
 use zapreq::collections::{
     add_request_to_workspace, create_workspace, delete_request, export_workspace, import_workspace,
@@ -39,14 +37,21 @@ use zapreq::regression::{
 use zapreq::request::{RequestEngine, RequestSpec};
 use zapreq::response::{RequestTrace, ResponseData};
 use zapreq::secrets::{get_secret, list_secret_keys, mask_secret, set_secret};
-use zapreq::security::{render_report as render_security_report, run_scan};
+use zapreq::security::{
+    render_report as render_security_report, run_scan, run_scan_with_options, SecurityScanOptions,
+};
 use zapreq::sessions::SessionData;
 use zapreq::sessions::{
     apply_session_to_request, load_session, save_session, update_session_from_exchange,
 };
 use zapreq::testing::{evaluate_response, render_text_report, TestOptions};
 use zapreq::tui::run_advanced_tui;
-use zapreq::utils::{humanize_bytes, humanize_duration, terminal_width, truncate_str};
+use zapreq::utils::{
+    ensure_resolved_placeholders, humanize_bytes, humanize_duration,
+    substitute_item_value_with_secrets as substitute_item_value,
+    substitute_placeholders_with_secrets as substitute_placeholders, terminal_width, truncate_str,
+    PlaceholderOrder,
+};
 use zapreq::zapdocs::{generate_docs, render_report as render_docs_report};
 
 /// CAUS-CORERUNTIM-01, CAUS-CORERUNTIM-02, CAUS-CORERUNTIM-03, CAUS-CORERUNTIM-04, CAUS-CORERUNTIM-05, CAUS-INTERNAL-52:
@@ -60,36 +65,25 @@ fn run() -> Result<i32> {
     let PreparedRequestContext {
         usable_url,
         request_items,
+        headers,
         loaded_session,
     } = prepare_request_context(&mut args)?;
     let registry = AuthRegistry::with_defaults();
     warn_if_auth_incomplete(&args);
-    let auth_plugin = if let Some(credentials) = args.auth.as_deref() {
-        registry
-            .get(&args.auth_type)
-            .context("unsupported auth type requested")?;
-        Some(build_auth(&args.auth_type, credentials).context("failed to configure auth plugin")?)
-    } else {
-        None
-    };
-
-    let spec = RequestSpec {
-        method: args.method.clone(),
-        url: usable_url,
-        items: request_items.clone(),
-    };
+    let auth_plugin = build_auth_plugin(&args, &registry)?;
+    let spec = build_request_spec(&args, usable_url, request_items.clone(), headers.clone());
 
     let engine = RequestEngine::new();
     let print_opts = build_print_opts(&args, &config);
 
     if let Some(code) =
-        maybe_run_offline_mode(&engine, &args, &spec, auth_plugin.as_deref(), &print_opts)?
+        maybe_run_preflight_mode(&engine, &args, &spec, auth_plugin.as_deref(), &print_opts)?
     {
         return Ok(code);
     }
-    if let Some(code) =
-        maybe_run_download_mode(&engine, &args, &spec, auth_plugin.as_deref(), &print_opts)?
-    {
+    validate_headers_for_request(&args, &spec)?;
+
+    if let Some(code) = maybe_run_preview_mode(&args, &spec)? {
         return Ok(code);
     }
 
@@ -131,13 +125,142 @@ enum PreparedRun {
 struct PreparedRequestContext {
     usable_url: String,
     request_items: Vec<RequestItem>,
+    headers: Vec<zapreq::headers::Header>,
     loaded_session: LoadedSession,
+}
+
+struct ResolvedRequestParts {
+    url: String,
+    items: Vec<String>,
 }
 
 struct ExecutedRequest {
     trace: RequestTrace,
     response: ResponseData,
     elapsed_ms: u64,
+}
+
+fn build_auth_plugin(
+    args: &CliArgs,
+    registry: &AuthRegistry,
+) -> Result<Option<Box<dyn zapreq::auth::AuthPlugin>>> {
+    let Some(credentials) = args.auth.as_deref() else {
+        return Ok(None);
+    };
+
+    registry
+        .get(&args.auth_type)
+        .context("unsupported auth type requested")?;
+    let plugin =
+        build_auth(&args.auth_type, credentials).context("failed to configure auth plugin")?;
+    Ok(Some(plugin))
+}
+
+fn build_request_spec(
+    args: &CliArgs,
+    usable_url: String,
+    request_items: Vec<RequestItem>,
+    headers: Vec<zapreq::headers::Header>,
+) -> RequestSpec {
+    RequestSpec {
+        method: args.method.clone(),
+        url: usable_url,
+        items: request_items,
+        headers,
+    }
+}
+
+fn maybe_run_preflight_mode(
+    engine: &RequestEngine,
+    args: &CliArgs,
+    spec: &RequestSpec,
+    auth_plugin: Option<&dyn zapreq::auth::AuthPlugin>,
+    print_opts: &zapreq::output::PrintOpts,
+) -> Result<Option<i32>> {
+    if let Some(code) = maybe_run_offline_mode(engine, args, spec, auth_plugin, print_opts)? {
+        return Ok(Some(code));
+    }
+    maybe_run_download_mode(engine, args, spec, auth_plugin, print_opts)
+}
+
+fn validate_headers_for_request(args: &CliArgs, spec: &RequestSpec) -> Result<()> {
+    let (body_type, body_content) = request_body_validation_input(args, &spec.items)?;
+    let warnings = zapreq::headers::validate_headers(
+        &spec.headers,
+        body_type,
+        body_content.as_deref(),
+        spec.url.starts_with("http://"),
+    );
+    emit_header_warnings(&warnings)
+}
+
+fn request_body_validation_input(
+    args: &CliArgs,
+    items: &[RequestItem],
+) -> Result<(&'static str, Option<String>)> {
+    let collected_items = zapreq::items::collect_from_parsed(items)?;
+    let body_type = if args.multipart || !collected_items.files.is_empty() {
+        "multipart"
+    } else if args.form {
+        "form"
+    } else if !collected_items.data_strings.is_empty() || !collected_items.data_json.is_empty() {
+        "json"
+    } else {
+        "none"
+    };
+    let body_content = build_json_body_preview(body_type, &collected_items);
+    Ok((body_type, body_content))
+}
+
+fn build_json_body_preview(
+    body_type: &str,
+    collected_items: &zapreq::items::CollectedItems,
+) -> Option<String> {
+    if body_type != "json" {
+        return None;
+    }
+
+    let mut map = serde_json::Map::new();
+    for (key, value) in &collected_items.data_strings {
+        map.insert(key.clone(), serde_json::Value::String(value.clone()));
+    }
+    for (key, value) in &collected_items.data_json {
+        map.insert(key.clone(), value.clone());
+    }
+
+    if map.is_empty() {
+        None
+    } else {
+        Some(serde_json::Value::Object(map).to_string())
+    }
+}
+
+fn emit_header_warnings(warnings: &[zapreq::headers::HeaderWarning]) -> Result<()> {
+    let mut has_errors = false;
+
+    for warning in warnings {
+        let prefix = match warning.severity {
+            zapreq::headers::HeaderValidationSeverity::Error => {
+                has_errors = true;
+                "error".red().bold()
+            }
+            zapreq::headers::HeaderValidationSeverity::Warning => "warning".yellow().bold(),
+            zapreq::headers::HeaderValidationSeverity::Info => "info".blue().bold(),
+        };
+        if let Some(name) = warning.name.as_deref() {
+            eprintln!("{}: [{}] {}", prefix, name, warning.message);
+        } else {
+            eprintln!("{}: {}", prefix, warning.message);
+        }
+    }
+
+    if has_errors {
+        return Err(anyhow!(
+            "Request cannot be safely built due to validation errors."
+        ));
+    }
+
+    Ok(())
 }
 
 fn prepare_run_args(config: &zapreq::config::Config) -> Result<PreparedRun> {
@@ -195,34 +318,31 @@ fn prepare_request_context(args: &mut CliArgs) -> Result<PreparedRequestContext>
         args.verbose,
     );
 
+    let mut env_headers = std::collections::HashMap::new();
+    if let Some(profile_name) = args.env_profile.as_deref() {
+        if let Ok(profile) = load_profile(profile_name) {
+            env_headers = profile.headers;
+        }
+    }
+    let headers = zapreq::headers::build_headers_from_cli(args, &request_items, &env_headers)?;
+
     Ok(PreparedRequestContext {
         usable_url,
         request_items,
+        headers,
         loaded_session,
     })
 }
 
 fn resolve_request_url(args: &CliArgs) -> Result<String> {
-    let mut resolved = CliResolved {
-        url: args.url.clone(),
-        request_items: args.request_items.clone(),
-        profile_headers: HashMap::new(),
-        variables: load_env_variables(args)?,
-    };
-
-    if let Some(profile_name) = args.env_profile.as_deref() {
-        let profile = load_profile(profile_name)
-            .with_context(|| format!("failed to load env profile: {profile_name}"))?;
-        apply_profile(&profile, &mut resolved);
-    }
-
-    let resolved_url = substitute_placeholders(&resolved.url, &resolved.variables);
-    let resolved_items = collect_resolved_items(&resolved);
-    validate_unresolved_values(&resolved_url, &resolved_items)?;
-    Ok(resolved_url)
+    Ok(resolve_request_parts(args)?.url)
 }
 
 fn resolve_request_items(args: &CliArgs) -> Result<Vec<String>> {
+    Ok(resolve_request_parts(args)?.items)
+}
+
+fn resolve_request_parts(args: &CliArgs) -> Result<ResolvedRequestParts> {
     let mut resolved = CliResolved {
         url: args.url.clone(),
         request_items: args.request_items.clone(),
@@ -239,7 +359,10 @@ fn resolve_request_items(args: &CliArgs) -> Result<Vec<String>> {
     let resolved_url = substitute_placeholders(&resolved.url, &resolved.variables);
     let resolved_items = collect_resolved_items(&resolved);
     validate_unresolved_values(&resolved_url, &resolved_items)?;
-    Ok(resolved_items)
+    Ok(ResolvedRequestParts {
+        url: resolved_url,
+        items: resolved_items,
+    })
 }
 
 fn load_env_variables(args: &CliArgs) -> Result<HashMap<String, String>> {
@@ -269,20 +392,14 @@ fn collect_resolved_items(resolved: &CliResolved) -> Vec<String> {
 }
 
 fn validate_unresolved_values(resolved_url: &str, resolved_items: &[String]) -> Result<()> {
-    let unresolved = unresolved_placeholders(
+    ensure_resolved_placeholders(
         std::iter::once(resolved_url)
             .chain(resolved_items.iter().map(String::as_str))
             .collect::<Vec<_>>()
             .as_slice(),
-    );
-    if unresolved.is_empty() {
-        return Ok(());
-    }
-
-    Err(anyhow!(
-        "unresolved variables: {} (set them via --env, --env-profile, or REQUEST_ITEMS)",
-        unresolved.join(", ")
-    ))
+        PlaceholderOrder::Sorted,
+        "set them via --env, --env-profile, or REQUEST_ITEMS",
+    )
 }
 
 fn append_resume_range_header(args: &CliArgs, resolved_items: &mut Vec<String>) {
@@ -565,87 +682,6 @@ fn load_env_file(path: &str) -> Result<HashMap<String, String>> {
     Ok(out)
 }
 
-fn substitute_placeholders(input: &str, vars: &HashMap<String, String>) -> String {
-    let re = Regex::new(r"\{\{([A-Za-z_][A-Za-z0-9_]*)\}\}|\{([A-Za-z_][A-Za-z0-9_]*)\}")
-        .expect("regex should compile");
-    re.replace_all(input, |caps: &regex::Captures<'_>| {
-        let key = caps
-            .get(1)
-            .or_else(|| caps.get(2))
-            .map(|m| m.as_str())
-            .unwrap_or_default();
-        if let Some(val) = vars.get(key) {
-            val.clone()
-        } else if let Ok(Some(secret_val)) = get_secret(key) {
-            secret_val
-        } else {
-            caps[0].to_string()
-        }
-    })
-    .into_owned()
-}
-
-fn unresolved_placeholders(values: &[&str]) -> Vec<String> {
-    let re = Regex::new(r"\{\{([A-Za-z_][A-Za-z0-9_]*)\}\}|\{([A-Za-z_][A-Za-z0-9_]*)\}")
-        .expect("regex should compile");
-    let mut unresolved = BTreeSet::new();
-    for value in values {
-        for caps in re.captures_iter(value) {
-            let name = caps
-                .get(1)
-                .or_else(|| caps.get(2))
-                .map(|m| m.as_str())
-                .unwrap_or_default();
-            if !name.is_empty() {
-                unresolved.insert(name.to_string());
-            }
-        }
-    }
-    unresolved.into_iter().collect()
-}
-
-fn substitute_item_value(raw: &str, vars: &HashMap<String, String>) -> String {
-    let token = raw.trim();
-
-    if let Some((k, v)) = token.split_once(":=@") {
-        return format!("{}:=@{}", k, substitute_placeholders(v, vars));
-    }
-    if let Some((k, v)) = token.split_once(":=") {
-        return format!("{}:={}", k, substitute_placeholders(v, vars));
-    }
-    if let Some((k, v)) = token.split_once("==") {
-        return format!("{}=={}", k, substitute_placeholders(v, vars));
-    }
-    if let Some((k, v)) = token.split_once(':') {
-        return format!("{}:{}", k, substitute_placeholders(v, vars));
-    }
-    if let Some((k, v)) = token.split_once("=@") {
-        return format!("{}=@{}", k, substitute_placeholders(v, vars));
-    }
-
-    if let Some((k, v)) = token.split_once('=') {
-        if token.contains('@') && token.contains(";type=") {
-            // typed upload is handled by the @ operator branch below
-        } else {
-            return format!("{}={}", k, substitute_placeholders(v, vars));
-        }
-    }
-
-    if let Some((k, v)) = token.split_once('@') {
-        if let Some((path, ct)) = v.split_once(";type=") {
-            return format!(
-                "{}@{};type={}",
-                k,
-                substitute_placeholders(path, vars),
-                substitute_placeholders(ct, vars)
-            );
-        }
-        return format!("{}@{}", k, substitute_placeholders(v, vars));
-    }
-
-    substitute_placeholders(token, vars)
-}
-
 fn infer_ssl_label(url: &str, cli_ssl: Option<&str>) -> String {
     if !url.starts_with("https://") {
         return "none".to_string();
@@ -761,6 +797,7 @@ fn handle_subcommand_match(
             url_b,
             request,
         } => handle_diff_cmd(url_a, url_b, request, args, config),
+        Command::Preset { command } => handle_preset_cmd(command),
     }
 }
 
@@ -1098,9 +1135,33 @@ fn handle_security_cmd(
             source,
             severity,
             live,
+            active,
+            env_profile,
+            bola_session_a,
+            bola_session_b,
+            rate_limit_requests,
+            rate_limit_concurrency,
         } => {
-            let report =
-                run_scan(&source, severity, live, config).context("security scan failed")?;
+            let report = if active
+                || env_profile.is_some()
+                || bola_session_a.is_some()
+                || bola_session_b.is_some()
+            {
+                let options = SecurityScanOptions {
+                    live_scan: live,
+                    active_scan: active,
+                    env_profile,
+                    bola_session_a_profile: bola_session_a,
+                    bola_session_b_profile: bola_session_b,
+                    rate_limit_requests,
+                    rate_limit_concurrency,
+                    ..SecurityScanOptions::default()
+                };
+                run_scan_with_options(&source, severity, &options, config)
+            } else {
+                run_scan(&source, severity, live, config)
+            }
+            .context("security scan failed")?;
             print!("{}", render_security_report(&report));
         }
     }
@@ -1346,14 +1407,14 @@ fn build_args_from_collection(
         entry.method.clone(),
         entry.url.clone(),
     ];
-    synthetic.extend(entry.items.clone());
+    synthetic.extend(
+        zapreq::collections::materialize_entry_items(&entry)
+            .context("failed to materialize saved request items")?,
+    );
     merge_defaults(config, &mut synthetic);
     let mut args = parse_cli_from(synthetic).context("failed to parse saved request")?;
     if args.env_profile.is_none() {
         args.env_profile = env_profile;
-    }
-    for (k, v) in entry.headers {
-        args.request_items.push(format!("{k}:{v}"));
     }
     Ok(args)
 }
@@ -1375,14 +1436,14 @@ fn build_args_from_workspace_request(
         entry.method.clone(),
         entry.url.clone(),
     ];
-    synthetic.extend(entry.items.clone());
+    synthetic.extend(
+        zapreq::collections::materialize_entry_items(&entry)
+            .context("failed to materialize workspace request items")?,
+    );
     merge_defaults(config, &mut synthetic);
     let mut args = parse_cli_from(synthetic).context("failed to parse workspace request")?;
     if args.env_profile.is_none() {
         args.env_profile = env_profile;
-    }
-    for (k, v) in entry.headers {
-        args.request_items.push(format!("{k}:{v}"));
     }
     Ok(args)
 }
@@ -1452,18 +1513,108 @@ fn cli_from_diff_tokens(
     Ok(parsed)
 }
 
+fn handle_preset_cmd(command: PresetCommand) -> Result<SubcommandOutcome> {
+    match command {
+        PresetCommand::Create { name, headers } => {
+            let mut parsed_headers = Vec::new();
+            for h in headers {
+                if let Some((k, v)) = h.split_once(':') {
+                    let k_trimmed = k.trim();
+                    let v_trimmed = v.trim();
+                    let sensitive = zapreq::headers::is_sensitive_header(k_trimmed);
+                    parsed_headers.push(zapreq::headers::Header {
+                        name: k_trimmed.to_string(),
+                        value: v_trimmed.to_string(),
+                        enabled: true,
+                        sensitive,
+                        source: zapreq::headers::HeaderSource::Preset,
+                    });
+                } else {
+                    return Err(anyhow!("Invalid header format '{}', expected Key:Value", h));
+                }
+            }
+            zapreq::header_presets::save_preset(&name, &parsed_headers)?;
+            println!(
+                "Preset '{}' created successfully with {} headers.",
+                name,
+                parsed_headers.len()
+            );
+        }
+        PresetCommand::List => {
+            let list = zapreq::header_presets::list_presets()?;
+            if list.is_empty() {
+                println!("No presets found.");
+            } else {
+                println!("Available presets:");
+                for name in list {
+                    println!("  - {}", name);
+                }
+            }
+        }
+        PresetCommand::Delete { name } => {
+            zapreq::header_presets::delete_preset(&name)?;
+            println!("Preset '{}' deleted.", name);
+        }
+    }
+    Ok(SubcommandOutcome::Exit(0))
+}
+
+fn maybe_run_preview_mode(args: &CliArgs, spec: &RequestSpec) -> Result<Option<i32>> {
+    if !(args.preview || args.dry_run) {
+        return Ok(None);
+    }
+
+    use colored::Colorize;
+    println!("Request Preview:");
+    println!("{} {} HTTP/1.1", spec.method.green().bold(), spec.url);
+    for h in &spec.headers {
+        if h.enabled {
+            let val = if args.show_secrets {
+                h.value.clone()
+            } else {
+                zapreq::headers::mask_header_value(&h.name, &h.value)
+            };
+            println!("{}: {}", h.name.blue(), val);
+        }
+    }
+    println!();
+
+    let collected = zapreq::items::collect_from_parsed(&spec.items)?;
+    let mut map = serde_json::Map::new();
+    for (k, v) in &collected.data_strings {
+        map.insert(k.clone(), serde_json::Value::String(v.clone()));
+    }
+    for (k, v) in &collected.data_json {
+        map.insert(k.clone(), v.clone());
+    }
+    if !map.is_empty() {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::Value::Object(map))?
+        );
+    }
+
+    if args.dry_run {
+        println!("\n{}", "[dry-run mode — request not sent]".cyan().bold());
+        return Ok(Some(0));
+    }
+
+    Ok(None)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        append_resume_range_header, collect_resolved_items, final_status_code, infer_ssl_label,
-        is_raw_subcommand_invocation, load_env_file, maybe_render_test_report, parse_cli_from,
-        resolve_request_items, resolve_request_url, should_launch_default_gui,
-        substitute_item_value, validate_unresolved_values,
+        append_resume_range_header, build_json_body_preview, collect_resolved_items,
+        final_status_code, infer_ssl_label, is_raw_subcommand_invocation, load_env_file,
+        maybe_render_test_report, parse_cli_from, resolve_request_items, resolve_request_url,
+        should_launch_default_gui, substitute_item_value, validate_unresolved_values,
     };
     use std::collections::HashMap;
     use std::fs;
     use tempfile::tempdir;
     use zapreq::config::CliResolved;
+    use zapreq::items::CollectedItems;
     use zapreq::response::{RequestTrace, ResponseData};
     use zapreq::testing::TestOptions;
 
@@ -1570,6 +1721,27 @@ mod tests {
 
         assert_eq!(items[0], "q==abc123");
         assert!(items.contains(&"Authorization:Bearer abc123".to_string()));
+    }
+
+    #[test]
+    fn build_json_body_preview_serializes_string_and_json_fields() {
+        let mut collected = CollectedItems::default();
+        collected
+            .data_strings
+            .push(("name".to_string(), "alice".to_string()));
+        collected
+            .data_json
+            .push(("meta".to_string(), serde_json::json!({ "role": "admin" })));
+
+        let preview =
+            build_json_body_preview("json", &collected).expect("preview should be generated");
+
+        let preview_json: serde_json::Value =
+            serde_json::from_str(&preview).expect("preview should be valid json");
+        assert_eq!(
+            preview_json,
+            serde_json::json!({ "name": "alice", "meta": { "role": "admin" } })
+        );
     }
 
     #[test]

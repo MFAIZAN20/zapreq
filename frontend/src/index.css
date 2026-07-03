@@ -586,6 +586,79 @@ body,
   padding: 20px;
 }
 
+.tab-content-wrapper {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.params-table {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 16px 20px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.table-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(0, 1.8fr) 38px 32px;
+  gap: 10px;
+  align-items: center;
+  padding: 0 4px 8px;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.table-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.table-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(0, 1.8fr) 38px 32px;
+  gap: 10px;
+  align-items: center;
+  padding: 10px 12px;
+  background-color: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+}
+
+.table-header.table-header-body {
+  grid-template-columns: minmax(0, 1.2fr) minmax(0, 1.4fr) 70px 38px 32px;
+}
+
+.table-row.table-row-body {
+  grid-template-columns: minmax(0, 1.2fr) minmax(0, 1.4fr) 70px 38px 32px;
+}
+
+.table-row .kv-input,
+.table-row .toolbar-select {
+  width: 100%;
+  min-width: 0;
+}
+
+.table-row .icon-btn {
+  padding: 6px;
+}
+
+.table-row input[type='checkbox'] {
+  width: 14px;
+  height: 14px;
+  accent-color: var(--accent-color);
+}
+
 /* Key Value Table styling */
 .kv-table-container {
   display: flex;
@@ -784,19 +857,40 @@ body,
 
 /* Resize Divider */
 .resize-divider {
+  appearance: none;
   width: 4px;
   cursor: col-resize;
-  background-color: transparent;
+  background-color: var(--bg-primary);
+  border: none;
   flex-shrink: 0;
   position: relative;
   z-index: 5;
   transition: background-color 0.2s;
 }
 
+.resize-divider::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 1px;
+  width: 1px;
+  background-color: var(--border-color);
+}
+
 .resize-divider:hover,
 .resize-divider.dragging {
-  background-color: var(--accent-color);
+  background-color: rgba(79, 70, 229, 0.08);
   width: 4px;
+}
+
+.resize-divider:hover::before,
+.resize-divider.dragging::before {
+  background-color: var(--accent-color);
+}
+
+.resize-divider:focus {
+  outline: none;
 }
 
 /* Dialog Overlay / Modals */

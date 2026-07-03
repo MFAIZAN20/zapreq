@@ -1,31 +1,39 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::time::Instant;
 
 use anyhow::{anyhow, Context, Result};
 use base64::Engine;
+use rusqlite::params;
 use serde::{Deserialize, Serialize};
-use zapreq::cli::{parse_cli_from, CliArgs};
+use zapreq::cli::{parse_cli_from, CliArgs, SeverityLevel};
 use zapreq::collections::{
-    create_workspace as core_create_workspace,
-    delete_workspace as core_delete_workspace, list_requests, list_workspaces, load_request,
-    load_workspace, load_workspace_request, save_request as save_legacy_request, CollectionEntry,
-    Workspace, WorkspaceRequest, WorkspaceSummary,
+    create_workspace as core_create_workspace, delete_workspace as core_delete_workspace,
+    list_requests, list_workspaces, load_request, load_workspace, load_workspace_request,
+    save_request as save_legacy_request, CollectionEntry, Workspace, WorkspaceRequest,
+    WorkspaceSummary,
 };
 use zapreq::config::{
     apply_profile, config_root_dir, load_config, load_profile, merge_defaults, CliResolved,
     EnvProfile,
 };
 use zapreq::env_cmd;
+use zapreq::headers::{Header, HeaderSource};
 use zapreq::items::parse_request_items;
 use zapreq::localdb::open_connection;
-use rusqlite::params;
-use zapreq::regression::{list_test_cases, StoredTestCase, delete_test_case as core_delete_test_case};
+use zapreq::regression::{
+    delete_test_case as core_delete_test_case, list_test_cases, StoredTestCase,
+};
 use zapreq::request::{RequestEngine, RequestSpec};
 use zapreq::response::ResponseData;
+use zapreq::security::{run_scan_for_records, SecurityReport, SecurityScanOptions};
 use zapreq::sources::{execute_record, RequestRecord};
 use zapreq::testing::{evaluate_response, TestOptions, TestReport};
-use zapreq::utils::{humanize_bytes, humanize_duration, is_binary, normalize_url};
+use zapreq::utils::{
+    humanize_bytes, humanize_duration, is_binary, normalize_url,
+    substitute_item_value_with_secrets as substitute_item_value,
+    substitute_placeholders_with_secrets as substitute_placeholders,
+};
 
 const SETTINGS_FILE: &str = "desktop_settings.json";
 
@@ -38,13 +46,14 @@ pub struct WorkspaceDto {
     pub requests: Vec<RequestDto>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RequestDto {
     pub id: Option<String>,
     pub name: String,
     pub method: String,
     pub url: String,
     pub items: Vec<String>,
+    pub headers: Option<Vec<Header>>,
     pub pre_request_script: Option<String>,
     pub post_response_script: Option<String>,
 }
@@ -144,6 +153,8 @@ pub struct SaveRequestPayload {
     pub url: String,
     #[serde(default)]
     pub items: Vec<String>,
+    #[serde(default)]
+    pub headers: Option<Vec<Header>>,
     pub pre_request_script: Option<String>,
     pub post_response_script: Option<String>,
 }
@@ -154,9 +165,39 @@ pub struct SendRequestPayload {
     pub url: String,
     #[serde(default)]
     pub items: Vec<String>,
+    #[serde(default)]
+    pub headers: Option<Vec<Header>>,
     pub env_profile: Option<String>,
     pub pre_request_script: Option<String>,
     pub post_response_script: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct RunSecurityScanPayload {
+    pub name: Option<String>,
+    pub method: String,
+    pub url: String,
+    #[serde(default)]
+    pub items: Vec<String>,
+    pub env_profile: Option<String>,
+    pub pre_request_script: Option<String>,
+    pub severity: Option<String>,
+    #[serde(default)]
+    pub live_scan: bool,
+    #[serde(default)]
+    pub active_scan: bool,
+    #[serde(default = "default_true")]
+    pub include_sqli: bool,
+    #[serde(default = "default_true")]
+    pub include_xss: bool,
+    #[serde(default = "default_true")]
+    pub include_bola: bool,
+    #[serde(default = "default_true")]
+    pub include_rate_limit: bool,
+    pub bola_session_a_profile: Option<String>,
+    pub bola_session_b_profile: Option<String>,
+    pub rate_limit_requests: Option<u32>,
+    pub rate_limit_concurrency: Option<u32>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -220,7 +261,6 @@ pub fn delete_request(workspace: String, id: String) -> Result<(), String> {
     })
 }
 
-
 #[tauri::command]
 pub fn rename_workspace(old_name: String, new_name: String) -> Result<(), String> {
     try_command(|| {
@@ -253,6 +293,7 @@ pub fn create_collection(payload: CreateCollectionPayload) -> Result<RequestDto,
             method: payload.method,
             url: payload.url,
             items: payload.items,
+            headers: None,
             pre_request_script: None,
             post_response_script: None,
         })
@@ -262,7 +303,11 @@ pub fn create_collection(payload: CreateCollectionPayload) -> Result<RequestDto,
 #[tauri::command]
 pub fn get_request(payload: RequestLookupPayload) -> Result<RequestDto, String> {
     try_command(|| {
-        if let Some(workspace) = payload.workspace.as_deref().filter(|value| !value.is_empty()) {
+        if let Some(workspace) = payload
+            .workspace
+            .as_deref()
+            .filter(|value| !value.is_empty())
+        {
             let entry = load_workspace_request(workspace, &payload.request)?;
             Ok(collection_entry_to_dto(entry, Some(payload.request)))
         } else {
@@ -271,7 +316,39 @@ pub fn get_request(payload: RequestLookupPayload) -> Result<RequestDto, String> 
     })
 }
 
-fn save_workspace_request_helper(ws: &mut Workspace, payload: &SaveRequestPayload, now: &str) -> String {
+fn map_v2_to_legacy(v2: &Option<Vec<Header>>) -> HashMap<String, String> {
+    let mut map = HashMap::new();
+    if let Some(headers) = v2 {
+        for h in headers {
+            if h.enabled {
+                map.insert(h.name.clone(), h.value.clone());
+            }
+        }
+    }
+    map
+}
+
+fn map_legacy_headers_to_v2(legacy: &std::collections::HashMap<String, String>) -> Vec<Header> {
+    legacy
+        .iter()
+        .map(|(k, v)| Header {
+            name: k.clone(),
+            value: v.clone(),
+            enabled: true,
+            sensitive: zapreq::headers::is_sensitive_header(k),
+            source: HeaderSource::User,
+        })
+        .collect()
+}
+
+fn save_workspace_request_helper(
+    ws: &mut Workspace,
+    payload: &SaveRequestPayload,
+    now: &str,
+) -> String {
+    let headers_v2 = payload.headers.clone();
+    let headers = map_v2_to_legacy(&payload.headers);
+
     match &payload.id {
         Some(id) if !id.is_empty() => {
             if let Some(existing) = ws.requests.iter_mut().find(|r| r.id == *id) {
@@ -279,6 +356,8 @@ fn save_workspace_request_helper(ws: &mut Workspace, payload: &SaveRequestPayloa
                 existing.method = payload.method.clone();
                 existing.url = payload.url.clone();
                 existing.items = payload.items.clone();
+                existing.headers = headers;
+                existing.headers_v2 = headers_v2;
                 existing.pre_request_script = payload.pre_request_script.clone();
                 existing.post_response_script = payload.post_response_script.clone();
                 existing.updated = now.to_string();
@@ -291,7 +370,8 @@ fn save_workspace_request_helper(ws: &mut Workspace, payload: &SaveRequestPayloa
                     method: payload.method.clone(),
                     url: payload.url.clone(),
                     items: payload.items.clone(),
-                    headers: HashMap::new(),
+                    headers,
+                    headers_v2,
                     tests: Vec::new(),
                     pre_request_script: payload.pre_request_script.clone(),
                     post_response_script: payload.post_response_script.clone(),
@@ -302,10 +382,16 @@ fn save_workspace_request_helper(ws: &mut Workspace, payload: &SaveRequestPayloa
             }
         }
         _ => {
-            if let Some(existing) = ws.requests.iter_mut().find(|r| r.name.eq_ignore_ascii_case(&payload.name)) {
+            if let Some(existing) = ws
+                .requests
+                .iter_mut()
+                .find(|r| r.name.eq_ignore_ascii_case(&payload.name))
+            {
                 existing.method = payload.method.clone();
                 existing.url = payload.url.clone();
                 existing.items = payload.items.clone();
+                existing.headers = headers;
+                existing.headers_v2 = headers_v2;
                 existing.pre_request_script = payload.pre_request_script.clone();
                 existing.post_response_script = payload.post_response_script.clone();
                 existing.updated = now.to_string();
@@ -318,7 +404,8 @@ fn save_workspace_request_helper(ws: &mut Workspace, payload: &SaveRequestPayloa
                     method: payload.method.clone(),
                     url: payload.url.clone(),
                     items: payload.items.clone(),
-                    headers: HashMap::new(),
+                    headers,
+                    headers_v2,
                     tests: Vec::new(),
                     pre_request_script: payload.pre_request_script.clone(),
                     post_response_script: payload.post_response_script.clone(),
@@ -335,9 +422,16 @@ fn save_workspace_request_helper(ws: &mut Workspace, payload: &SaveRequestPayloa
 pub fn save_request(payload: SaveRequestPayload) -> Result<RequestDto, String> {
     try_command(|| {
         let cli = cli_from_parts(&payload.method, &payload.url, &payload.items)?;
-        
-        let final_id = if let Some(workspace_name) = payload.workspace.as_deref().filter(|value| !value.is_empty()) {
-            let mut ws = if list_workspaces()?.iter().any(|ws| ws.name == workspace_name) {
+
+        let final_id = if let Some(workspace_name) = payload
+            .workspace
+            .as_deref()
+            .filter(|value| !value.is_empty())
+        {
+            let mut ws = if list_workspaces()?
+                .iter()
+                .any(|ws| ws.name == workspace_name)
+            {
                 load_workspace(workspace_name)?
             } else {
                 zapreq::collections::create_workspace(workspace_name)?
@@ -355,76 +449,150 @@ pub fn save_request(payload: SaveRequestPayload) -> Result<RequestDto, String> {
         };
 
         Ok(RequestDto {
-            id: if final_id.is_empty() { None } else { Some(final_id) },
+            id: if final_id.is_empty() {
+                None
+            } else {
+                Some(final_id)
+            },
             name: payload.name,
             method: payload.method,
             url: payload.url,
             items: payload.items,
+            headers: payload.headers,
             pre_request_script: payload.pre_request_script,
             post_response_script: payload.post_response_script,
         })
     })
 }
 
+fn merge_payload_and_parsed_headers(
+    payload_headers: &[Header],
+    parsed_items: &[zapreq::items::RequestItem],
+) -> Vec<Header> {
+    let mut merged = payload_headers
+        .iter()
+        .map(|header| Header {
+            name: header.name.clone(),
+            value: header.value.clone(),
+            enabled: header.enabled,
+            sensitive: header.sensitive || zapreq::headers::is_sensitive_header(&header.name),
+            source: header.source.clone(),
+        })
+        .collect::<Vec<_>>();
+
+    let mut existing = HashSet::new();
+    for header in &merged {
+        existing.insert((header.name.to_ascii_lowercase(), header.value.clone()));
+    }
+
+    for header in zapreq::headers::headers_from_parsed_items(parsed_items, HeaderSource::User) {
+        let key = (header.name.to_ascii_lowercase(), header.value.clone());
+        if existing.insert(key) {
+            merged.push(header);
+        }
+    }
+
+    merged
+}
+
+fn resolve_final_headers_for_runtime(
+    method: &str,
+    resolved_url: &str,
+    resolved_items: &[String],
+    parsed_items: &[zapreq::items::RequestItem],
+    payload_headers: Option<&[Header]>,
+    env_profile: Option<&str>,
+    variables: &HashMap<String, String>,
+) -> Result<Vec<Header>> {
+    let mut env_headers = Vec::new();
+    if let Some(profile_name) = env_profile {
+        if let Ok(profile) = load_profile(profile_name) {
+            for (key, value) in profile.headers {
+                env_headers.push(Header {
+                    name: key.clone(),
+                    value: zapreq::config::substitute_placeholders(&value, variables),
+                    enabled: true,
+                    sensitive: zapreq::headers::is_sensitive_header(&key),
+                    source: HeaderSource::Environment,
+                });
+            }
+        }
+    }
+
+    let collected = zapreq::items::collect_from_parsed(parsed_items)?;
+    let has_file_uploads = !collected.files.is_empty();
+    let cli = cli_from_parts(method, resolved_url, resolved_items)?;
+    let body_type = if cli.multipart || has_file_uploads {
+        "multipart"
+    } else if cli.form {
+        "form"
+    } else if !collected.data_strings.is_empty() || !collected.data_json.is_empty() {
+        "json"
+    } else {
+        "none"
+    };
+    let autos = zapreq::headers::get_auto_headers(body_type);
+
+    let user_headers = if let Some(payload_headers) = payload_headers {
+        merge_payload_and_parsed_headers(payload_headers, parsed_items)
+    } else {
+        zapreq::headers::headers_from_parsed_items(parsed_items, HeaderSource::User)
+    };
+
+    let final_headers = zapreq::headers::merge_headers(&[], &env_headers, &user_headers, &autos);
+    Ok(final_headers
+        .into_iter()
+        .map(|mut header| {
+            header.value = zapreq::config::substitute_placeholders(&header.value, variables);
+            header
+        })
+        .collect())
+}
+
 #[tauri::command]
 pub fn send_request(payload: SendRequestPayload) -> Result<ResponseDto, String> {
     try_command(|| {
         let config = load_config()?;
-        let mut method = normalized_method(&payload.method)?;
-        let mut resolved = CliResolved {
-            url: payload.url,
-            request_items: payload.items,
-            profile_headers: HashMap::new(),
-            variables: HashMap::new(),
-        };
+        let resolved = resolve_runtime_request(
+            &config,
+            &payload.method,
+            payload.url,
+            payload.items,
+            payload.env_profile.as_deref(),
+            payload.pre_request_script.as_deref(),
+        )?;
+        let parsed_items = parse_request_items(&resolved.items)?;
+        let cli = cli_from_parts(&resolved.method, &resolved.url, &resolved.items)?;
+        let final_headers = resolve_final_headers_for_runtime(
+            &resolved.method,
+            &resolved.url,
+            &resolved.items,
+            &parsed_items,
+            payload.headers.as_deref(),
+            payload.env_profile.as_deref(),
+            &resolved.variables,
+        )?;
 
-        if let Some(profile_name) = payload
-            .env_profile
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty() && *value != "none")
-        {
-            let profile = load_profile(profile_name)?;
-            apply_profile(&profile, &mut resolved);
-        }
-
-        let mut url = resolved.url.clone();
-        let mut request_items = resolved.request_items.clone();
-        let mut variables = resolved.variables.clone();
-
-        if let Some(script) = payload.pre_request_script.as_deref().filter(|s| !s.trim().is_empty()) {
-            let _ = run_pre_request_script(script, &mut method, &mut url, &mut request_items, &mut variables);
-        }
-
-        let url = substitute_placeholders(&url, &variables);
-        let mut items = request_items
-            .iter()
-            .map(|raw| substitute_item_value(raw, &variables))
-            .collect::<Vec<_>>();
-        for (key, value) in &resolved.profile_headers {
-            items.push(format!(
-                "{}:{}",
-                substitute_placeholders(key, &variables),
-                substitute_placeholders(value, &variables)
-            ));
-        }
-
-        let url = normalize_url(&url, &config.default_scheme)?;
-        let parsed_items = parse_request_items(&items)?;
-        let cli = cli_from_parts(&method, &url, &items)?;
         let spec = RequestSpec {
-            method: method.clone(),
-            url: url.clone(),
+            method: resolved.method.clone(),
+            url: resolved.url.clone(),
             items: parsed_items,
+            headers: final_headers,
         };
         let started = Instant::now();
         let (trace, response) = RequestEngine::new().send(&cli, &spec, None)?;
         let elapsed_ms = started.elapsed().as_millis() as u64;
 
         let mut test_results = Vec::new();
-        let mut response_dto = response_to_dto(&trace.method, &trace.url, response, elapsed_ms, Vec::new());
+        let mut response_dto =
+            response_to_dto(&trace.method, &trace.url, response, elapsed_ms, Vec::new());
 
-        if let Some(script) = payload.post_response_script.as_deref().filter(|s| !s.trim().is_empty()) {
+        if let Some(script) = payload
+            .post_response_script
+            .as_deref()
+            .filter(|s| !s.trim().is_empty())
+        {
+            let mut variables = resolved.variables;
             if let Ok(tests) = run_post_response_script(script, &response_dto, &mut variables) {
                 test_results = tests;
             }
@@ -454,6 +622,65 @@ pub fn send_request(payload: SendRequestPayload) -> Result<ResponseDto, String> 
 }
 
 #[tauri::command]
+pub fn run_security_scan(payload: RunSecurityScanPayload) -> Result<SecurityReport, String> {
+    try_command(|| {
+        let config = load_config()?;
+        let resolved = resolve_runtime_request(
+            &config,
+            &payload.method,
+            payload.url,
+            payload.items,
+            payload.env_profile.as_deref(),
+            payload.pre_request_script.as_deref(),
+        )?;
+        let source_label = payload
+            .name
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(|name| format!("tauri:{name}"))
+            .unwrap_or_else(|| format!("tauri:{} {}", resolved.method, resolved.url));
+        let record = RequestRecord {
+            name: payload
+                .name
+                .unwrap_or_else(|| format!("{} {}", resolved.method, resolved.url)),
+            method: resolved.method.clone(),
+            url: resolved.url.clone(),
+            items: resolved.items,
+            headers: HashMap::new(),
+            source_label,
+        };
+        let options = SecurityScanOptions {
+            live_scan: payload.live_scan,
+            active_scan: payload.active_scan,
+            include_sqli: payload.include_sqli,
+            include_xss: payload.include_xss,
+            include_bola: payload.include_bola,
+            include_rate_limit: payload.include_rate_limit,
+            env_profile: payload
+                .env_profile
+                .filter(|value| !value.trim().is_empty() && value != "none"),
+            bola_session_a_profile: payload
+                .bola_session_a_profile
+                .filter(|value| !value.trim().is_empty() && value != "none"),
+            bola_session_b_profile: payload
+                .bola_session_b_profile
+                .filter(|value| !value.trim().is_empty() && value != "none"),
+            rate_limit_requests: payload.rate_limit_requests.unwrap_or(12),
+            rate_limit_concurrency: payload.rate_limit_concurrency.unwrap_or(4),
+        };
+        let severity = parse_severity_level(payload.severity.as_deref())?;
+        run_scan_for_records(
+            record.source_label.clone(),
+            vec![record],
+            severity,
+            &options,
+            &config,
+        )
+    })
+}
+
+#[tauri::command]
 pub fn get_environments() -> Result<Vec<String>, String> {
     try_command(env_cmd::list_profiles)
 }
@@ -471,7 +698,9 @@ pub fn save_environment(payload: SaveEnvironmentPayload) -> Result<(), String> {
                 '/' | '\\' | '\0' | ':' | '*' | '?' | '"' | '<' | '>' | '|'
             )
         }) {
-            return Err(anyhow!("environment name contains invalid filesystem characters"));
+            return Err(anyhow!(
+                "environment name contains invalid filesystem characters"
+            ));
         }
 
         let dir = config_root_dir()?.join("envs");
@@ -593,13 +822,7 @@ pub fn run_test_case(payload: TestCasePayload) -> Result<TestReport, String> {
         };
         let config = load_config()?;
         let (trace, response, elapsed_ms) = execute_record(&record, &config)?;
-        let report = evaluate_response(
-            &trace.method,
-            &trace.url,
-            &response,
-            elapsed_ms,
-            &opts,
-        );
+        let report = evaluate_response(&trace.method, &trace.url, &response, elapsed_ms, &opts);
         let _ = zapreq::localdb::record_http_report(
             "Tauri Test",
             &trace.method,
@@ -665,8 +888,6 @@ pub fn get_test_runs() -> Result<Vec<TestRunDto>, String> {
     })
 }
 
-
-
 #[tauri::command]
 pub fn get_app_settings() -> Result<AppSettings, String> {
     try_command(load_app_settings)
@@ -708,12 +929,18 @@ fn workspace_to_dto(summary: WorkspaceSummary) -> Result<WorkspaceDto> {
 }
 
 fn workspace_request_to_dto(request: WorkspaceRequest) -> RequestDto {
+    let headers = Some(
+        request
+            .headers_v2
+            .unwrap_or_else(|| map_legacy_headers_to_v2(&request.headers)),
+    );
     RequestDto {
         id: Some(request.id),
         name: request.name,
         method: request.method,
         url: request.url,
         items: request.items,
+        headers,
         pre_request_script: request.pre_request_script,
         post_response_script: request.post_response_script,
     }
@@ -724,12 +951,18 @@ fn legacy_to_dto(entry: CollectionEntry) -> RequestDto {
 }
 
 fn collection_entry_to_dto(entry: CollectionEntry, id: Option<String>) -> RequestDto {
+    let headers = Some(
+        entry
+            .headers_v2
+            .unwrap_or_else(|| map_legacy_headers_to_v2(&entry.headers)),
+    );
     RequestDto {
         id,
         name: entry.alias,
         method: entry.method,
         url: entry.url,
         items: entry.items,
+        headers,
         pre_request_script: None,
         post_response_script: None,
     }
@@ -751,6 +984,88 @@ fn normalized_method(raw: &str) -> Result<String> {
         return Err(anyhow!("HTTP method cannot be empty"));
     }
     Ok(method)
+}
+
+struct ResolvedRuntimeRequest {
+    method: String,
+    url: String,
+    items: Vec<String>,
+    variables: HashMap<String, String>,
+}
+
+fn resolve_runtime_request(
+    config: &zapreq::config::Config,
+    method_raw: &str,
+    url: String,
+    items: Vec<String>,
+    env_profile: Option<&str>,
+    pre_request_script: Option<&str>,
+) -> Result<ResolvedRuntimeRequest> {
+    let mut method = normalized_method(method_raw)?;
+    let mut resolved = CliResolved {
+        url,
+        request_items: items,
+        profile_headers: HashMap::new(),
+        variables: HashMap::new(),
+    };
+
+    if let Some(profile_name) = env_profile
+        .map(str::trim)
+        .filter(|value| !value.is_empty() && *value != "none")
+    {
+        let profile = load_profile(profile_name)?;
+        apply_profile(&profile, &mut resolved);
+    }
+
+    let mut url = resolved.url.clone();
+    let mut request_items = resolved.request_items.clone();
+    let mut variables = resolved.variables.clone();
+
+    if let Some(script) = pre_request_script.filter(|script| !script.trim().is_empty()) {
+        let _ = run_pre_request_script(
+            script,
+            &mut method,
+            &mut url,
+            &mut request_items,
+            &mut variables,
+        );
+    }
+
+    let url = substitute_placeholders(&url, &variables);
+    let mut final_items = request_items
+        .iter()
+        .map(|raw| substitute_item_value(raw, &variables))
+        .collect::<Vec<_>>();
+    for (key, value) in &resolved.profile_headers {
+        final_items.push(format!(
+            "{}:{}",
+            substitute_placeholders(key, &variables),
+            substitute_placeholders(value, &variables)
+        ));
+    }
+
+    let url = normalize_url(&url, &config.default_scheme)?;
+
+    Ok(ResolvedRuntimeRequest {
+        method,
+        url,
+        items: final_items,
+        variables,
+    })
+}
+
+fn parse_severity_level(raw: Option<&str>) -> Result<SeverityLevel> {
+    let normalized = raw.unwrap_or("low").trim().to_ascii_lowercase();
+    match normalized.as_str() {
+        "low" => Ok(SeverityLevel::Low),
+        "medium" => Ok(SeverityLevel::Medium),
+        "high" => Ok(SeverityLevel::High),
+        "critical" => Ok(SeverityLevel::Critical),
+        _ => Err(anyhow!(
+            "invalid severity '{}'; expected low, medium, high, or critical",
+            normalized
+        )),
+    }
 }
 
 fn response_to_dto(
@@ -794,71 +1109,20 @@ fn settings_path() -> Result<std::path::PathBuf> {
     Ok(config_root_dir()?.join(SETTINGS_FILE))
 }
 
+fn default_true() -> bool {
+    true
+}
+
 fn load_app_settings() -> Result<AppSettings> {
     let path = settings_path()?;
     if !path.exists() {
         return Ok(AppSettings::default());
     }
-    let raw = fs::read_to_string(&path)
-        .with_context(|| format!("failed to read {}", path.display()))?;
+    let raw =
+        fs::read_to_string(&path).with_context(|| format!("failed to read {}", path.display()))?;
     Ok(serde_json::from_str::<AppSettings>(&raw)
         .unwrap_or_default()
         .sanitized())
-}
-
-fn substitute_placeholders(input: &str, vars: &HashMap<String, String>) -> String {
-    let re = regex::Regex::new(r"\{\{([A-Za-z_][A-Za-z0-9_]*)\}\}|\{([A-Za-z_][A-Za-z0-9_]*)\}")
-        .expect("regex should compile");
-    re.replace_all(input, |caps: &regex::Captures<'_>| {
-        let key = caps
-            .get(1)
-            .or_else(|| caps.get(2))
-            .map(|value| value.as_str())
-            .unwrap_or_default();
-        if let Some(val) = vars.get(key) {
-            val.clone()
-        } else if let Ok(Some(secret_val)) = zapreq::secrets::get_secret(key) {
-            secret_val
-        } else {
-            caps[0].to_string()
-        }
-    })
-    .into_owned()
-}
-
-fn substitute_item_value(raw: &str, vars: &HashMap<String, String>) -> String {
-    let token = raw.trim();
-    if let Some((key, value)) = token.split_once(":=@") {
-        return format!("{key}:=@{}", substitute_placeholders(value, vars));
-    }
-    if let Some((key, value)) = token.split_once(":=") {
-        return format!("{key}:={}", substitute_placeholders(value, vars));
-    }
-    if let Some((key, value)) = token.split_once("==") {
-        return format!("{key}=={}", substitute_placeholders(value, vars));
-    }
-    if let Some((key, value)) = token.split_once(':') {
-        return format!("{key}:{}", substitute_placeholders(value, vars));
-    }
-    if let Some((key, value)) = token.split_once("=@") {
-        return format!("{key}=@{}", substitute_placeholders(value, vars));
-    }
-    if let Some((key, value)) = token.split_once('=') {
-        if !(token.contains('@') && token.contains(";type=")) {
-            return format!("{key}={}", substitute_placeholders(value, vars));
-        }
-    }
-    if let Some((key, value)) = token.split_once('@') {
-        if let Some((path, content_type)) = value.split_once(";type=") {
-            return format!(
-                "{key}@{};type={}",
-                substitute_placeholders(path, vars),
-                substitute_placeholders(content_type, vars)
-            );
-        }
-        return format!("{key}@{}", substitute_placeholders(value, vars));
-    }
-    substitute_placeholders(token, vars)
 }
 
 // ==========================================
@@ -985,7 +1249,10 @@ fs.writeFileSync('{}', JSON.stringify(context, null, 2));
                 Err(anyhow!("Pre-request script failed: {}", stderr))
             }
         }
-        Err(e) => Err(anyhow!("Node.js execution failed: {}. Make sure Node.js is installed.", e)),
+        Err(e) => Err(anyhow!(
+            "Node.js execution failed: {}. Make sure Node.js is installed.",
+            e
+        )),
     };
 
     let _ = std::fs::remove_dir_all(&temp_dir);
@@ -1106,7 +1373,10 @@ fs.writeFileSync('{}', JSON.stringify(context, null, 2));
                 Err(anyhow!("Post-response script failed: {}", stderr))
             }
         }
-        Err(e) => Err(anyhow!("Node.js execution failed: {}. Make sure Node.js is installed.", e)),
+        Err(e) => Err(anyhow!(
+            "Node.js execution failed: {}. Make sure Node.js is installed.",
+            e
+        )),
     };
 
     let _ = std::fs::remove_dir_all(&temp_dir);
@@ -1119,9 +1389,7 @@ fs.writeFileSync('{}', JSON.stringify(context, null, 2));
 
 #[tauri::command]
 pub fn import_workspace(name: String, path: String) -> Result<(), String> {
-    try_command(|| {
-        zapreq::collections::import_workspace(name.trim(), path.trim()).map(|_| ())
-    })
+    try_command(|| zapreq::collections::import_workspace(name.trim(), path.trim()).map(|_| ()))
 }
 
 #[tauri::command]
@@ -1170,10 +1438,10 @@ pub fn save_test_case(payload: AddTestCasePayload) -> Result<(), String> {
         if suite.is_empty() || name.is_empty() {
             return Err(anyhow!("Suite and name cannot be empty"));
         }
-        
+
         let conn = open_connection()?;
         let now = chrono::Utc::now().to_rfc3339();
-        
+
         conn.execute(
             "INSERT INTO test_cases (
                 suite, name, source_label, method, url, items_json, headers_json,
@@ -1215,4 +1483,73 @@ pub fn save_test_case(payload: AddTestCasePayload) -> Result<(), String> {
 #[tauri::command]
 pub fn delete_test_case(suite: String, name: String) -> Result<bool, String> {
     try_command(|| core_delete_test_case(suite.trim(), name.trim()))
+}
+
+#[tauri::command]
+pub fn get_presets() -> Result<Vec<String>, String> {
+    try_command(|| zapreq::header_presets::list_presets())
+}
+
+#[tauri::command]
+pub fn get_preset(name: String) -> Result<Vec<Header>, String> {
+    try_command(|| zapreq::header_presets::load_preset(&name))
+}
+
+#[tauri::command]
+pub fn create_preset(name: String, headers: Vec<Header>) -> Result<(), String> {
+    try_command(|| zapreq::header_presets::save_preset(&name, &headers))
+}
+
+#[tauri::command]
+pub fn delete_preset(name: String) -> Result<(), String> {
+    try_command(|| zapreq::header_presets::delete_preset(&name))
+}
+
+#[tauri::command]
+pub fn get_header_suggestions() -> Result<Vec<zapreq::headers::HeaderSuggestion>, String> {
+    try_command(|| Ok(zapreq::headers::header_suggestions()))
+}
+
+#[tauri::command]
+pub fn get_merged_headers(
+    method: String,
+    url: String,
+    items: Vec<String>,
+    user_headers: Vec<Header>,
+    env_profile: Option<String>,
+) -> Result<Vec<Header>, String> {
+    try_command(|| {
+        let config = load_config()?;
+        let resolved =
+            resolve_runtime_request(&config, &method, url, items, env_profile.as_deref(), None)?;
+
+        let parsed_items = parse_request_items(&resolved.items)?;
+        resolve_final_headers_for_runtime(
+            &method,
+            &resolved.url,
+            &resolved.items,
+            &parsed_items,
+            Some(&user_headers),
+            env_profile.as_deref(),
+            &resolved.variables,
+        )
+    })
+}
+
+#[tauri::command]
+pub fn validate_request_headers(
+    headers: Vec<Header>,
+    url: String,
+    body_type: String,
+    body_content: Option<String>,
+) -> Result<Vec<zapreq::headers::HeaderWarning>, String> {
+    try_command(|| {
+        let is_unencrypted = url.to_ascii_lowercase().starts_with("http://");
+        Ok(zapreq::headers::validate_headers(
+            &headers,
+            &body_type,
+            body_content.as_deref(),
+            is_unencrypted,
+        ))
+    })
 }

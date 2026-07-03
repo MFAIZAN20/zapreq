@@ -19,6 +19,7 @@ fn main() {
             get_request,
             save_request,
             send_request,
+            run_security_scan,
             get_environments,
             save_environment,
             get_reports,
@@ -34,7 +35,14 @@ fn main() {
             set_secret,
             delete_secret,
             save_test_case,
-            delete_test_case
+            delete_test_case,
+            get_presets,
+            get_preset,
+            create_preset,
+            delete_preset,
+            get_header_suggestions,
+            get_merged_headers,
+            validate_request_headers
         ])
         .run(tauri::generate_context!())
         .expect("failed to run ZapReq Tauri desktop app");

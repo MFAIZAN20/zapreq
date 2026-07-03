@@ -129,10 +129,16 @@ fn send_one(url: &str, cli: &Cli) -> Result<crate::response::ResponseData> {
 
     let parsed_items =
         parse_request_items(&args.request_items).context("failed to parse request items")?;
+    let headers = crate::headers::build_headers_from_cli(
+        &args,
+        &parsed_items,
+        &std::collections::HashMap::new(),
+    )?;
     let spec = RequestSpec {
         method: args.method.clone(),
         url: url.to_string(),
         items: parsed_items,
+        headers,
     };
 
     let auth_plugin = if let Some(auth) = args.auth.as_deref() {

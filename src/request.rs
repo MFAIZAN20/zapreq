@@ -25,6 +25,7 @@ pub struct RequestSpec {
     pub method: String,
     pub url: String,
     pub items: Vec<RequestItem>,
+    pub headers: Vec<crate::headers::Header>,
 }
 
 /// CAUS-CORERUNTIM-01, CAUS-CORERUNTIM-03:
@@ -126,12 +127,14 @@ impl RequestEngine {
         let mut builder = client.request(method.clone(), &spec.url);
         let mut headers_preview = HeaderMap::new();
 
-        for (key, value) in &collected.headers {
-            let name = HeaderName::from_bytes(key.as_bytes())
-                .with_context(|| format!("invalid header name: {key}"))?;
-            let val = HeaderValue::from_str(value)
-                .with_context(|| format!("invalid header value for {key}"))?;
-            headers_preview.append(name, val);
+        for h in &spec.headers {
+            if h.enabled {
+                let name = HeaderName::from_bytes(h.name.as_bytes())
+                    .with_context(|| format!("invalid header name: {}", h.name))?;
+                let val = HeaderValue::from_str(&h.value)
+                    .with_context(|| format!("invalid header value for {}", h.name))?;
+                headers_preview.append(name, val);
+            }
         }
 
         if !collected.query_params.is_empty() {

@@ -21,6 +21,7 @@ pub struct PrintOpts {
     pub theme: Theme,
     pub stream: bool,
     pub truncate: bool,
+    pub show_secrets: bool,
 }
 
 /// Pretty-print behavior.
@@ -104,6 +105,7 @@ pub fn build_print_opts(cli: &CliArgs, config: &Config) -> PrintOpts {
         theme,
         stream: cli.stream,
         truncate: true,
+        show_secrets: cli.show_secrets,
     }
 }
 
@@ -116,32 +118,19 @@ pub fn print_request(
     opts: &PrintOpts,
 ) {
     let _ = opts.theme.meta_border;
+    if !opts.request_headers && !opts.request_body {
+        return;
+    }
+
     if opts.request_headers {
-        let path = request_path(url);
-        println!(
-            "{}",
-            format_request_line(method, &path, "HTTP/1.1", &opts.theme)
-        );
-        for (name, value) in headers {
-            let value = value.to_str().unwrap_or("<non-utf8>");
-            println!("{}", format_header_line(name.as_str(), value, &opts.theme));
-        }
+        print_request_head(method, url, headers, opts);
         if opts.request_body {
             println!();
         }
     }
 
-    if opts.request_body {
-        if let Some(payload) = body {
-            if matches!(opts.pretty, PrettyMode::None) {
-                println!("{payload}");
-            } else {
-                println!(
-                    "{}",
-                    json::format_json(payload, &opts.theme, 4, opts.truncate)
-                );
-            }
-        }
+    if let Some(payload) = body.filter(|_| opts.request_body) {
+        print_request_body(payload, opts);
     }
 }
 
@@ -155,12 +144,12 @@ pub fn print_response(
     opts: &PrintOpts,
 ) {
     let _ = opts.stream;
+    if !opts.response_headers && !opts.response_body {
+        return;
+    }
+
     if opts.response_headers {
-        println!("{}", format_status_line(status, reason, &opts.theme));
-        for (name, value) in headers {
-            let value = value.to_str().unwrap_or("<non-utf8>");
-            println!("{}", format_header_line(name.as_str(), value, &opts.theme));
-        }
+        print_response_head(status, reason, headers, opts);
         if opts.response_body {
             println!();
         }
@@ -175,29 +164,7 @@ pub fn print_response(
         return;
     }
 
-    let ct = content_type.to_ascii_lowercase();
-    if ct.contains("application/json") {
-        if let Ok(value) = serde_json::from_slice::<Value>(body_bytes) {
-            println!(
-                "{}",
-                json::format_json(&value, &opts.theme, 4, opts.truncate)
-            );
-        } else {
-            println!("{}", String::from_utf8_lossy(body_bytes));
-        }
-    } else if ct.contains("text/xml") || ct.contains("application/xml") {
-        println!(
-            "{}",
-            xml::format_xml(&String::from_utf8_lossy(body_bytes), &opts.theme)
-        );
-    } else if ct.contains("text/html") {
-        println!(
-            "{}",
-            html::format_html(&String::from_utf8_lossy(body_bytes))
-        );
-    } else {
-        println!("{}", String::from_utf8_lossy(body_bytes));
-    }
+    print_response_body(body_bytes, content_type, opts);
 }
 
 fn request_path(url: &str) -> String {
@@ -217,7 +184,126 @@ fn request_path(url: &str) -> String {
     }
 }
 
+fn print_request_head(method: &str, url: &str, headers: &HeaderMap, opts: &PrintOpts) {
+    let path = request_path(url);
+    println!(
+        "{}",
+        format_request_line(method, &path, "HTTP/1.1", &opts.theme)
+    );
+    print_headers(headers, opts);
+}
+
+fn print_response_head(status: u16, reason: &str, headers: &HeaderMap, opts: &PrintOpts) {
+    println!("{}", format_status_line(status, reason, &opts.theme));
+    print_headers(headers, opts);
+}
+
+fn print_headers(headers: &HeaderMap, opts: &PrintOpts) {
+    for (name, value) in headers {
+        let value = value.to_str().unwrap_or("<non-utf8>");
+        println!(
+            "{}",
+            format_header_line(
+                name.as_str(),
+                &header_display_value(name.as_str(), value, opts),
+                &opts.theme
+            )
+        );
+    }
+}
+
+fn header_display_value(name: &str, value: &str, opts: &PrintOpts) -> String {
+    if opts.show_secrets {
+        value.to_string()
+    } else {
+        crate::headers::mask_header_value(name, value)
+    }
+}
+
+fn print_request_body(payload: &Value, opts: &PrintOpts) {
+    if matches!(opts.pretty, PrettyMode::None) {
+        println!("{payload}");
+        return;
+    }
+
+    println!(
+        "{}",
+        json::format_json(payload, &opts.theme, 4, opts.truncate)
+    );
+}
+
+fn print_response_body(body_bytes: &[u8], content_type: &str, opts: &PrintOpts) {
+    let ct = content_type.to_ascii_lowercase();
+    if ct.contains("application/json") {
+        print_json_or_plain(body_bytes, opts);
+    } else if ct.contains("text/xml") || ct.contains("application/xml") {
+        println!(
+            "{}",
+            xml::format_xml(&String::from_utf8_lossy(body_bytes), &opts.theme)
+        );
+    } else if ct.contains("text/html") {
+        println!(
+            "{}",
+            html::format_html(&String::from_utf8_lossy(body_bytes))
+        );
+    } else {
+        println!("{}", String::from_utf8_lossy(body_bytes));
+    }
+}
+
+fn print_json_or_plain(body_bytes: &[u8], opts: &PrintOpts) {
+    if let Ok(value) = serde_json::from_slice::<Value>(body_bytes) {
+        println!(
+            "{}",
+            json::format_json(&value, &opts.theme, 4, opts.truncate)
+        );
+        return;
+    }
+
+    println!("{}", String::from_utf8_lossy(body_bytes));
+}
+
 #[allow(dead_code)]
 pub fn _ensure_result_usage() -> Result<()> {
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{header_display_value, request_path, PrettyMode, PrintOpts};
+    use crate::output::theme::no_color;
+
+    fn opts(show_secrets: bool) -> PrintOpts {
+        PrintOpts {
+            request_headers: true,
+            request_body: true,
+            response_headers: true,
+            response_body: true,
+            pretty: PrettyMode::None,
+            theme: no_color(),
+            stream: false,
+            truncate: true,
+            show_secrets,
+        }
+    }
+
+    #[test]
+    fn header_display_value_masks_secrets_when_hidden() {
+        let rendered = header_display_value("Authorization", "Bearer token123456", &opts(false));
+        assert_eq!(rendered, "Bearer token...****");
+    }
+
+    #[test]
+    fn header_display_value_keeps_plain_values_visible() {
+        let rendered = header_display_value("Accept", "application/json", &opts(false));
+        assert_eq!(rendered, "application/json");
+    }
+
+    #[test]
+    fn request_path_keeps_query_string() {
+        assert_eq!(
+            request_path("https://example.com/api/users?page=2"),
+            "/api/users?page=2"
+        );
+    }
 }

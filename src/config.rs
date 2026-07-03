@@ -256,3 +256,7 @@ fn default_pretty() -> String {
 fn default_verify() -> bool {
     true
 }
+
+pub fn substitute_placeholders(input: &str, vars: &HashMap<String, String>) -> String {
+    crate::utils::substitute_placeholders_with_secrets(input, vars)
+}
