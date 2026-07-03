@@ -17,6 +17,13 @@ fn placeholder_regex() -> &'static Regex {
     })
 }
 
+fn placeholder_name<'a>(caps: &'a Captures<'a>) -> Option<&'a str> {
+    caps.get(1)
+        .or_else(|| caps.get(2))
+        .map(|token| token.as_str())
+        .filter(|key| !key.is_empty())
+}
+
 fn substitute_placeholders_impl(
     input: &str,
     vars: &HashMap<String, String>,
@@ -109,39 +116,35 @@ pub fn substitute_item_value_with_secrets(raw: &str, vars: &HashMap<String, Stri
 
 pub fn unresolved_placeholders(values: &[&str], order: PlaceholderOrder) -> Vec<String> {
     match order {
-        PlaceholderOrder::Appearance => {
-            let mut unresolved = Vec::new();
-            for value in values {
-                for caps in placeholder_regex().captures_iter(value) {
-                    let key = caps
-                        .get(1)
-                        .or_else(|| caps.get(2))
-                        .map(|token| token.as_str())
-                        .unwrap_or_default();
-                    if !key.is_empty() && !unresolved.iter().any(|existing| existing == key) {
-                        unresolved.push(key.to_string());
-                    }
+        PlaceholderOrder::Appearance => unresolved_placeholders_in_appearance_order(values),
+        PlaceholderOrder::Sorted => unresolved_placeholders_sorted(values),
+    }
+}
+
+fn unresolved_placeholders_in_appearance_order(values: &[&str]) -> Vec<String> {
+    let mut unresolved = Vec::new();
+    for value in values {
+        for caps in placeholder_regex().captures_iter(value) {
+            if let Some(key) = placeholder_name(&caps) {
+                if !unresolved.iter().any(|existing| existing == key) {
+                    unresolved.push(key.to_string());
                 }
             }
-            unresolved
-        }
-        PlaceholderOrder::Sorted => {
-            let mut unresolved = BTreeSet::new();
-            for value in values {
-                for caps in placeholder_regex().captures_iter(value) {
-                    let key = caps
-                        .get(1)
-                        .or_else(|| caps.get(2))
-                        .map(|token| token.as_str())
-                        .unwrap_or_default();
-                    if !key.is_empty() {
-                        unresolved.insert(key.to_string());
-                    }
-                }
-            }
-            unresolved.into_iter().collect()
         }
     }
+    unresolved
+}
+
+fn unresolved_placeholders_sorted(values: &[&str]) -> Vec<String> {
+    let mut unresolved = BTreeSet::new();
+    for value in values {
+        for caps in placeholder_regex().captures_iter(value) {
+            if let Some(key) = placeholder_name(&caps) {
+                unresolved.insert(key.to_string());
+            }
+        }
+    }
+    unresolved.into_iter().collect()
 }
 
 pub fn ensure_resolved_placeholders(

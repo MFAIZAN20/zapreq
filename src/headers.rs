@@ -819,9 +819,7 @@ mod tests {
         assert!(warnings.iter().any(|warning| {
             warning.name.as_deref() == Some("Content-Type")
                 && warning.severity == HeaderValidationSeverity::Error
-                && warning
-                    .message
-                    .contains("body content is not valid JSON")
+                && warning.message.contains("body content is not valid JSON")
         }));
     }
 
@@ -849,7 +847,9 @@ mod tests {
         assert!(warnings.iter().any(|warning| {
             warning.name.as_deref() == Some("X-Trace")
                 && warning.severity == HeaderValidationSeverity::Info
-                && warning.message.contains("Duplicate header 'X-Trace' detected.")
+                && warning
+                    .message
+                    .contains("Duplicate header 'X-Trace' detected.")
         }));
     }
 
