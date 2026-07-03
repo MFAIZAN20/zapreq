@@ -6,7 +6,7 @@ use std::sync::{
 use std::thread;
 use std::time::Instant;
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result};
 use chrono::Utc;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -19,7 +19,10 @@ use crate::localdb::{open_connection, record_report};
 use crate::request::{RequestEngine, RequestSpec};
 use crate::response::ResponseData;
 use crate::sources::{build_cli_for_record, execute_record, resolve_records, RequestRecord};
-use crate::utils::normalize_url;
+use crate::utils::{
+    ensure_resolved_placeholders, normalize_url, substitute_item_value, substitute_placeholders,
+    PlaceholderOrder,
+};
 
 #[derive(Clone, Debug, Serialize)]
 pub struct SecurityFinding {
@@ -1376,90 +1379,14 @@ fn combined_record_items(record: &RequestRecord) -> Vec<String> {
 }
 
 fn validate_unresolved_values(resolved_url: &str, resolved_items: &[String]) -> Result<()> {
-    let unresolved = unresolved_placeholders(
+    ensure_resolved_placeholders(
         std::iter::once(resolved_url)
             .chain(resolved_items.iter().map(String::as_str))
             .collect::<Vec<_>>()
             .as_slice(),
-    );
-    if unresolved.is_empty() {
-        return Ok(());
-    }
-
-    Err(anyhow!(
-        "unresolved variables: {} (set them in the selected environment profile)",
-        unresolved.join(", ")
-    ))
-}
-
-fn unresolved_placeholders(values: &[&str]) -> Vec<String> {
-    let re = Regex::new(r"\{\{([A-Za-z_][A-Za-z0-9_]*)\}\}|\{([A-Za-z_][A-Za-z0-9_]*)\}")
-        .expect("regex should compile");
-    let mut output = Vec::new();
-    for value in values {
-        for caps in re.captures_iter(value) {
-            let key = caps
-                .get(1)
-                .or_else(|| caps.get(2))
-                .map(|token| token.as_str())
-                .unwrap_or_default();
-            if !output.iter().any(|existing| existing == key) {
-                output.push(key.to_string());
-            }
-        }
-    }
-    output
-}
-
-fn substitute_placeholders(input: &str, vars: &HashMap<String, String>) -> String {
-    let re = Regex::new(r"\{\{([A-Za-z_][A-Za-z0-9_]*)\}\}|\{([A-Za-z_][A-Za-z0-9_]*)\}")
-        .expect("regex should compile");
-    re.replace_all(input, |caps: &regex::Captures<'_>| {
-        let key = caps
-            .get(1)
-            .or_else(|| caps.get(2))
-            .map(|value| value.as_str())
-            .unwrap_or_default();
-        vars.get(key)
-            .cloned()
-            .unwrap_or_else(|| caps[0].to_string())
-    })
-    .into_owned()
-}
-
-fn substitute_item_value(raw: &str, vars: &HashMap<String, String>) -> String {
-    let token = raw.trim();
-    if let Some((key, value)) = token.split_once(":=@") {
-        return format!("{key}:=@{}", substitute_placeholders(value, vars));
-    }
-    if let Some((key, value)) = token.split_once(":=") {
-        return format!("{key}:={}", substitute_placeholders(value, vars));
-    }
-    if let Some((key, value)) = token.split_once("==") {
-        return format!("{key}=={}", substitute_placeholders(value, vars));
-    }
-    if let Some((key, value)) = token.split_once(':') {
-        return format!("{key}:{}", substitute_placeholders(value, vars));
-    }
-    if let Some((key, value)) = token.split_once("=@") {
-        return format!("{key}=@{}", substitute_placeholders(value, vars));
-    }
-    if let Some((key, value)) = token.split_once('=') {
-        if !(token.contains('@') && token.contains(";type=")) {
-            return format!("{key}={}", substitute_placeholders(value, vars));
-        }
-    }
-    if let Some((key, value)) = token.split_once('@') {
-        if let Some((path, content_type)) = value.split_once(";type=") {
-            return format!(
-                "{key}@{};type={}",
-                substitute_placeholders(path, vars),
-                substitute_placeholders(content_type, vars)
-            );
-        }
-        return format!("{key}@{}", substitute_placeholders(value, vars));
-    }
-    substitute_placeholders(token, vars)
+        PlaceholderOrder::Appearance,
+        "set them in the selected environment profile",
+    )
 }
 
 fn finding(record: &RequestRecord, spec: FindingSpec<'_>) -> SecurityFinding {

@@ -1,7 +1,5 @@
 use anyhow::{anyhow, Context, Result};
 use colored::Colorize;
-use regex::Regex;
-use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::time::Instant;
 
@@ -48,7 +46,12 @@ use zapreq::sessions::{
 };
 use zapreq::testing::{evaluate_response, render_text_report, TestOptions};
 use zapreq::tui::run_advanced_tui;
-use zapreq::utils::{humanize_bytes, humanize_duration, terminal_width, truncate_str};
+use zapreq::utils::{
+    ensure_resolved_placeholders, humanize_bytes, humanize_duration,
+    substitute_item_value_with_secrets as substitute_item_value,
+    substitute_placeholders_with_secrets as substitute_placeholders, terminal_width, truncate_str,
+    PlaceholderOrder,
+};
 use zapreq::zapdocs::{generate_docs, render_report as render_docs_report};
 
 /// CAUS-CORERUNTIM-01, CAUS-CORERUNTIM-02, CAUS-CORERUNTIM-03, CAUS-CORERUNTIM-04, CAUS-CORERUNTIM-05, CAUS-INTERNAL-52:
@@ -389,20 +392,14 @@ fn collect_resolved_items(resolved: &CliResolved) -> Vec<String> {
 }
 
 fn validate_unresolved_values(resolved_url: &str, resolved_items: &[String]) -> Result<()> {
-    let unresolved = unresolved_placeholders(
+    ensure_resolved_placeholders(
         std::iter::once(resolved_url)
             .chain(resolved_items.iter().map(String::as_str))
             .collect::<Vec<_>>()
             .as_slice(),
-    );
-    if unresolved.is_empty() {
-        return Ok(());
-    }
-
-    Err(anyhow!(
-        "unresolved variables: {} (set them via --env, --env-profile, or REQUEST_ITEMS)",
-        unresolved.join(", ")
-    ))
+        PlaceholderOrder::Sorted,
+        "set them via --env, --env-profile, or REQUEST_ITEMS",
+    )
 }
 
 fn append_resume_range_header(args: &CliArgs, resolved_items: &mut Vec<String>) {
@@ -683,87 +680,6 @@ fn load_env_file(path: &str) -> Result<HashMap<String, String>> {
     }
 
     Ok(out)
-}
-
-fn substitute_placeholders(input: &str, vars: &HashMap<String, String>) -> String {
-    let re = Regex::new(r"\{\{([A-Za-z_][A-Za-z0-9_]*)\}\}|\{([A-Za-z_][A-Za-z0-9_]*)\}")
-        .expect("regex should compile");
-    re.replace_all(input, |caps: &regex::Captures<'_>| {
-        let key = caps
-            .get(1)
-            .or_else(|| caps.get(2))
-            .map(|m| m.as_str())
-            .unwrap_or_default();
-        if let Some(val) = vars.get(key) {
-            val.clone()
-        } else if let Ok(Some(secret_val)) = get_secret(key) {
-            secret_val
-        } else {
-            caps[0].to_string()
-        }
-    })
-    .into_owned()
-}
-
-fn unresolved_placeholders(values: &[&str]) -> Vec<String> {
-    let re = Regex::new(r"\{\{([A-Za-z_][A-Za-z0-9_]*)\}\}|\{([A-Za-z_][A-Za-z0-9_]*)\}")
-        .expect("regex should compile");
-    let mut unresolved = BTreeSet::new();
-    for value in values {
-        for caps in re.captures_iter(value) {
-            let name = caps
-                .get(1)
-                .or_else(|| caps.get(2))
-                .map(|m| m.as_str())
-                .unwrap_or_default();
-            if !name.is_empty() {
-                unresolved.insert(name.to_string());
-            }
-        }
-    }
-    unresolved.into_iter().collect()
-}
-
-fn substitute_item_value(raw: &str, vars: &HashMap<String, String>) -> String {
-    let token = raw.trim();
-
-    if let Some((k, v)) = token.split_once(":=@") {
-        return format!("{}:=@{}", k, substitute_placeholders(v, vars));
-    }
-    if let Some((k, v)) = token.split_once(":=") {
-        return format!("{}:={}", k, substitute_placeholders(v, vars));
-    }
-    if let Some((k, v)) = token.split_once("==") {
-        return format!("{}=={}", k, substitute_placeholders(v, vars));
-    }
-    if let Some((k, v)) = token.split_once(':') {
-        return format!("{}:{}", k, substitute_placeholders(v, vars));
-    }
-    if let Some((k, v)) = token.split_once("=@") {
-        return format!("{}=@{}", k, substitute_placeholders(v, vars));
-    }
-
-    if let Some((k, v)) = token.split_once('=') {
-        if token.contains('@') && token.contains(";type=") {
-            // typed upload is handled by the @ operator branch below
-        } else {
-            return format!("{}={}", k, substitute_placeholders(v, vars));
-        }
-    }
-
-    if let Some((k, v)) = token.split_once('@') {
-        if let Some((path, ct)) = v.split_once(";type=") {
-            return format!(
-                "{}@{};type={}",
-                k,
-                substitute_placeholders(path, vars),
-                substitute_placeholders(ct, vars)
-            );
-        }
-        return format!("{}@{}", k, substitute_placeholders(v, vars));
-    }
-
-    substitute_placeholders(token, vars)
 }
 
 fn infer_ssl_label(url: &str, cli_ssl: Option<&str>) -> String {

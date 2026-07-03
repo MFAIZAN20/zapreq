@@ -1,4 +1,169 @@
 use anyhow::{anyhow, Context, Result};
+use regex::{Captures, Regex};
+use std::collections::{BTreeSet, HashMap};
+use std::sync::OnceLock;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PlaceholderOrder {
+    Appearance,
+    Sorted,
+}
+
+fn placeholder_regex() -> &'static Regex {
+    static PLACEHOLDER_REGEX: OnceLock<Regex> = OnceLock::new();
+    PLACEHOLDER_REGEX.get_or_init(|| {
+        Regex::new(r"\{\{([A-Za-z_][A-Za-z0-9_]*)\}\}|\{([A-Za-z_][A-Za-z0-9_]*)\}")
+            .expect("regex should compile")
+    })
+}
+
+fn substitute_placeholders_impl(
+    input: &str,
+    vars: &HashMap<String, String>,
+    include_secrets: bool,
+) -> String {
+    placeholder_regex()
+        .replace_all(input, |caps: &Captures<'_>| {
+            let key = caps
+                .get(1)
+                .or_else(|| caps.get(2))
+                .map(|m| m.as_str())
+                .unwrap_or_default();
+            if let Some(val) = vars.get(key) {
+                val.clone()
+            } else if include_secrets {
+                if let Ok(Some(secret_val)) = crate::secrets::get_secret(key) {
+                    secret_val
+                } else {
+                    caps[0].to_string()
+                }
+            } else {
+                caps[0].to_string()
+            }
+        })
+        .into_owned()
+}
+
+pub fn substitute_placeholders(input: &str, vars: &HashMap<String, String>) -> String {
+    substitute_placeholders_impl(input, vars, false)
+}
+
+pub fn substitute_placeholders_with_secrets(input: &str, vars: &HashMap<String, String>) -> String {
+    substitute_placeholders_impl(input, vars, true)
+}
+
+fn substitute_item_value_impl(
+    raw: &str,
+    vars: &HashMap<String, String>,
+    include_secrets: bool,
+) -> String {
+    let token = raw.trim();
+    let substitute = |value: &str| {
+        if include_secrets {
+            substitute_placeholders_with_secrets(value, vars)
+        } else {
+            substitute_placeholders(value, vars)
+        }
+    };
+
+    if let Some((key, value)) = token.split_once(":=@") {
+        return format!("{key}:=@{}", substitute(value));
+    }
+    if let Some((key, value)) = token.split_once(":=") {
+        return format!("{key}:={}", substitute(value));
+    }
+    if let Some((key, value)) = token.split_once("==") {
+        return format!("{key}=={}", substitute(value));
+    }
+    if let Some((key, value)) = token.split_once(':') {
+        return format!("{key}:{}", substitute(value));
+    }
+    if let Some((key, value)) = token.split_once("=@") {
+        return format!("{key}=@{}", substitute(value));
+    }
+    if let Some((key, value)) = token.split_once('=') {
+        if !(token.contains('@') && token.contains(";type=")) {
+            return format!("{key}={}", substitute(value));
+        }
+    }
+    if let Some((key, value)) = token.split_once('@') {
+        if let Some((path, content_type)) = value.split_once(";type=") {
+            return format!(
+                "{key}@{};type={}",
+                substitute(path),
+                substitute(content_type)
+            );
+        }
+        return format!("{key}@{}", substitute(value));
+    }
+    substitute(token)
+}
+
+pub fn substitute_item_value(raw: &str, vars: &HashMap<String, String>) -> String {
+    substitute_item_value_impl(raw, vars, false)
+}
+
+pub fn substitute_item_value_with_secrets(raw: &str, vars: &HashMap<String, String>) -> String {
+    substitute_item_value_impl(raw, vars, true)
+}
+
+pub fn unresolved_placeholders(values: &[&str], order: PlaceholderOrder) -> Vec<String> {
+    match order {
+        PlaceholderOrder::Appearance => {
+            let mut unresolved = Vec::new();
+            for value in values {
+                for caps in placeholder_regex().captures_iter(value) {
+                    let key = caps
+                        .get(1)
+                        .or_else(|| caps.get(2))
+                        .map(|token| token.as_str())
+                        .unwrap_or_default();
+                    if !key.is_empty() && !unresolved.iter().any(|existing| existing == key) {
+                        unresolved.push(key.to_string());
+                    }
+                }
+            }
+            unresolved
+        }
+        PlaceholderOrder::Sorted => {
+            let mut unresolved = BTreeSet::new();
+            for value in values {
+                for caps in placeholder_regex().captures_iter(value) {
+                    let key = caps
+                        .get(1)
+                        .or_else(|| caps.get(2))
+                        .map(|token| token.as_str())
+                        .unwrap_or_default();
+                    if !key.is_empty() {
+                        unresolved.insert(key.to_string());
+                    }
+                }
+            }
+            unresolved.into_iter().collect()
+        }
+    }
+}
+
+pub fn ensure_resolved_placeholders(
+    values: &[&str],
+    order: PlaceholderOrder,
+    guidance: &str,
+) -> Result<()> {
+    let unresolved = unresolved_placeholders(values, order);
+    if unresolved.is_empty() {
+        return Ok(());
+    }
+
+    if guidance.trim().is_empty() {
+        Err(anyhow!("unresolved variables: {}", unresolved.join(", ")))
+    } else {
+        Err(anyhow!(
+            "unresolved variables: {} ({})",
+            unresolved.join(", "),
+            guidance
+        ))
+    }
+}
 
 /// CAUS-CORERUNTIM-04:
 /// Removes UTF-8 BOM from byte stream when present.

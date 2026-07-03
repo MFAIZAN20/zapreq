@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result};
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use crossterm::execute;
 use crossterm::terminal::{
@@ -26,7 +26,11 @@ use crate::format::{html, json, xml};
 use crate::items::parse_request_items;
 use crate::output::theme::no_color;
 use crate::request::{RequestEngine, RequestSpec};
-use crate::utils::{is_binary, normalize_url};
+use crate::utils::{
+    ensure_resolved_placeholders, is_binary, normalize_url,
+    substitute_item_value_with_secrets as substitute_item_value,
+    substitute_placeholders_with_secrets as substitute_placeholders, PlaceholderOrder,
+};
 
 const LEGACY_KEY: &str = "__legacy__";
 type TuiSources = (
@@ -630,15 +634,14 @@ fn execute_request_from_tui(
         ));
     }
 
-    let unresolved = unresolved_placeholders(
+    ensure_resolved_placeholders(
         std::iter::once(resolved_url.as_str())
             .chain(resolved_items.iter().map(|s| s.as_str()))
             .collect::<Vec<_>>()
             .as_slice(),
-    );
-    if !unresolved.is_empty() {
-        return Err(anyhow!("unresolved variables: {}", unresolved.join(", ")));
-    }
+        PlaceholderOrder::Sorted,
+        "",
+    )?;
 
     let usable_url = normalize_url(&resolved_url, &config.default_scheme)
         .context("failed to build usable URL")?;
@@ -739,82 +742,6 @@ fn render_body_for_tui(content_type: &Option<String>, body_bytes: &[u8]) -> Stri
     }
 
     String::from_utf8_lossy(body_bytes).into_owned()
-}
-
-fn substitute_placeholders(input: &str, vars: &HashMap<String, String>) -> String {
-    let re = regex::Regex::new(r"\{\{([A-Za-z_][A-Za-z0-9_]*)\}\}|\{([A-Za-z_][A-Za-z0-9_]*)\}")
-        .expect("regex should compile");
-    re.replace_all(input, |caps: &regex::Captures<'_>| {
-        let key = caps
-            .get(1)
-            .or_else(|| caps.get(2))
-            .map(|m| m.as_str())
-            .unwrap_or_default();
-        if let Some(val) = vars.get(key) {
-            val.clone()
-        } else if let Ok(Some(secret_val)) = crate::secrets::get_secret(key) {
-            secret_val
-        } else {
-            caps[0].to_string()
-        }
-    })
-    .into_owned()
-}
-
-fn substitute_item_value(raw: &str, vars: &HashMap<String, String>) -> String {
-    let token = raw.trim();
-    if let Some((k, v)) = token.split_once(":=@") {
-        return format!("{}:=@{}", k, substitute_placeholders(v, vars));
-    }
-    if let Some((k, v)) = token.split_once(":=") {
-        return format!("{}:={}", k, substitute_placeholders(v, vars));
-    }
-    if let Some((k, v)) = token.split_once("==") {
-        return format!("{}=={}", k, substitute_placeholders(v, vars));
-    }
-    if let Some((k, v)) = token.split_once(':') {
-        return format!("{}:{}", k, substitute_placeholders(v, vars));
-    }
-    if let Some((k, v)) = token.split_once("=@") {
-        return format!("{}=@{}", k, substitute_placeholders(v, vars));
-    }
-    if let Some((k, v)) = token.split_once('=') {
-        if token.contains('@') && token.contains(";type=") {
-        } else {
-            return format!("{}={}", k, substitute_placeholders(v, vars));
-        }
-    }
-    if let Some((k, v)) = token.split_once('@') {
-        if let Some((path, ct)) = v.split_once(";type=") {
-            return format!(
-                "{}@{};type={}",
-                k,
-                substitute_placeholders(path, vars),
-                substitute_placeholders(ct, vars)
-            );
-        }
-        return format!("{}@{}", k, substitute_placeholders(v, vars));
-    }
-    substitute_placeholders(token, vars)
-}
-
-fn unresolved_placeholders(values: &[&str]) -> Vec<String> {
-    let re = regex::Regex::new(r"\{\{([A-Za-z_][A-Za-z0-9_]*)\}\}|\{([A-Za-z_][A-Za-z0-9_]*)\}")
-        .expect("regex should compile");
-    let mut unresolved = BTreeSet::new();
-    for value in values {
-        for caps in re.captures_iter(value) {
-            let name = caps
-                .get(1)
-                .or_else(|| caps.get(2))
-                .map(|m| m.as_str())
-                .unwrap_or_default();
-            if !name.is_empty() {
-                unresolved.insert(name.to_string());
-            }
-        }
-    }
-    unresolved.into_iter().collect()
 }
 
 fn load_tui_state() -> Result<TuiState> {
