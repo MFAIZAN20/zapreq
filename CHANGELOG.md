@@ -1,3 +1,8 @@
+## [0.1.8] - 2026-07-18
+
+### Changed
+- Refined progress handling and consolidated shared request, security, and UI utilities for improved maintainability.
+
 ## [0.1.7] - 2026-06-27
 
 ### Changed

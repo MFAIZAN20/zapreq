@@ -42,7 +42,7 @@ function mockPresetByName(name?: string) {
   if (name === 'Global Defaults') {
     return [
       { name: 'Accept-Encoding', value: 'gzip, deflate, br', enabled: true, sensitive: false, source: 'Preset' },
-      { name: 'User-Agent', value: 'zapreq/0.1.7', enabled: true, sensitive: false, source: 'Preset' },
+      { name: 'User-Agent', value: 'zapreq/0.1.8', enabled: true, sensitive: false, source: 'Preset' },
     ];
   }
   if (name === 'Auth Tokens') {
@@ -5066,7 +5066,7 @@ export default function App() {
                 <div style={{ borderTop: '1px solid var(--border-color)', paddingTop: '12px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
                     <Heart size={14} style={{ color: 'red' }} fill="red" />
-                    <span>Version 0.1.7 (Tauri 2.0)</span>
+                    <span>Version 0.1.8 (Tauri 2.0)</span>
                   </div>
                   <span>ZapReq Core Engine</span>
                 </div>
